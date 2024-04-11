@@ -1,4 +1,0 @@
-INFO: 2022/08/17 15:48:25 logs.go:38: Starting up execution with debug = true
-ERROR: 2022/08/17 15:48:25 kub.go:24: Something went wrong Get "https://192.168.49.2:6443/api/v1/namespaces/mig-ready/pods": dial tcp 192.168.49.2:6443: connect: connection refused
-INFO: 2022/08/17 15:48:25 kub.go:26: There are %d pods in the cluster
- 0
