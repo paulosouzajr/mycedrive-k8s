@@ -1,4 +1,4 @@
-# Kubernetes-mig
+# MyceDrive
 
 This repository contains a complete stateful migration resources for Kubernetes to perform Pod and volume migration.
 The repository is composed by two projects implemented in GoLang: the go-agent and the go-server. The go-agent runs inside the container, 
