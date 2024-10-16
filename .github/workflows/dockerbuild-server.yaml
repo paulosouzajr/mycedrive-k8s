@@ -1,4 +1,4 @@
-name: Build and Push Server Docker Image
+ name: Build and Push Server Docker Image
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       image_tag:
         description: 'Tag for the Docker image'
         required: true
-        default: 'latest'
+        default: 'dev'
 
 jobs:
   build-and-push:
@@ -28,6 +28,6 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v2
       with:
-        context: .
+        context: go-server
         push: true
         tags: myce-drive/:${{ github.event.inputs.image_tag }}
