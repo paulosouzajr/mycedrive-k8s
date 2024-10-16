@@ -30,4 +30,4 @@ jobs:
       with:
         context: go-server
         push: true
-        tags: myce-drive/go-server:${{ github.event.inputs.image_tag }}
+        tags: mycedrive/go-server:${{ github.event.inputs.image_tag }}
