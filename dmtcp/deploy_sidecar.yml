@@ -1,0 +1,41 @@
+apiVersion: apps/v1 # for versions before 1.9.0 use apps/v1beta2
+kind: Deployment
+metadata:
+  name: mosquitto-app
+spec:
+  selector:
+    matchLabels:
+      app: mosquitto-app
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: mosquitto-app
+    spec:
+      volumes:
+      - name: dmtcp-shared
+        emptyDir: {}
+      containers:
+      - name: mosquitto
+        image: prrsjunior/mosquitto:arq1
+        ports:
+        - containerPort: 9001
+        - containerPort: 1883
+        env:
+        - name: DMTCP_COORD_HOST
+          value: 127.0.0.1
+        - name: DMTCP_CHECKPOINT_DIR
+          value: /dmtcp/checkpoints
+        volumeMounts:
+        - name: dmtcp-shared
+          mountPath: /dmtcp
+      - name: dmtcp
+        image: prrsjunior/dmtcp:dev
+#        command: ["/dmtcp/bin/dmtcp_coordinator"]
+#        command: ["sleep 10000"]
+        ports:
+        - containerPort: 7779
+        volumeMounts:
+        - name: dmtcp-shared
+          mountPath: /share 
+

@@ -1,0 +1,44 @@
+version: '3.6'
+
+services:
+  dmtcp:
+    build:
+      context: ./dmtcp
+      dockerfile: Dockerfile
+    image: prrsjunior/dmtcp
+    expose:
+      - "7779"
+    volumes:
+      - static-files:/dmtcp
+#    command: ["/bin/bash", "-c", "sleep 100000"]
+#  wtf:
+#    image: ubuntu
+#    privileged: true
+#    command: sleep 10000
+#    tty: true
+#    volumes:
+#      - static-files:/dmtcp
+#    depends_on:
+#      - dmtcp
+  mosquitto:
+    build:
+      context: ./mosquitto_d
+      dockerfile: Dockerfile
+    image: prrsjunior/mosquitto
+    expose:
+      - "7779"
+      - "1883"
+      - "9001"
+    ports:
+      - 1883:1883
+    environment:
+      - DMTCP_COORD_HOST=dmtcp
+      - DMTCP_CHECKPOINT_DIR=/dmtcp/checkpoints
+    volumes:
+      - static-files:/dmtcp
+    depends_on:
+      - dmtcp
+
+volumes:
+  static-files:
+ 
