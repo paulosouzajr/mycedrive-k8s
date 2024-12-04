@@ -2,3 +2,4 @@ config
 *.key
 client
 ca
+*.yaml
