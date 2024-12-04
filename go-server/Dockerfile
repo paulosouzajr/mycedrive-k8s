@@ -7,11 +7,15 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -o main .
+# Build the Go application statically to ensure compatibility with Alpine
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
 
 FROM alpine:latest
 
 WORKDIR /root/
+
+# Install necessary certificates
+RUN apk --no-cache add ca-certificates
 
 COPY --from=builder /app/main .
 

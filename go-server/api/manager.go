@@ -2,21 +2,23 @@ package api
 
 import (
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"go-client/kub"
 	"go-client/logs"
+	"net"
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"net/http"
-	"strings"
 )
 
-//type PodManager struct {
-//	Clients    map[*Pod]bool
-//	Register   chan *Pod
-//	Unregister chan *Pod
-//}
+type PodManager struct {
+	Clients    map[*Pod]bool
+	Register   chan *Pod
+	Unregister chan *Pod
+}
 
 var (
 	err       error
@@ -25,11 +27,12 @@ var (
 )
 
 type Pod struct {
-	// socket   net.Conn
+	socket     net.Conn
 	mig        bool
 	metaData   string
 	podName    string
 	podAddress string
+	data       chan []byte
 }
 
 type Message struct {
@@ -99,7 +102,7 @@ func MigratePod(c *gin.Context) {
 
 func migrate(config *rest.Config, deployment string, label string, currentNode string, destNode string) {
 	if containsEmpty(deployment, label, currentNode, destNode) {
-		logs.LogError(fmt.Errorf("Missing parameters: %s %s %s %s\n", deployment, label, currentNode, destNode))
+		logs.LogError(fmt.Errorf("missing parameters: %s %s %s %s", deployment, label, currentNode, destNode))
 	}
 
 	// creates the clientset
@@ -157,66 +160,66 @@ func containsEmpty(ss ...string) bool {
 	return false
 }
 
-//func StartServer(manager PodManager) {
-//	logs.LogInfo("Starting server...")
-//	listener, error := net.Listen("tcp", ":3333")
-//	if error != nil {
-//		fmt.Println(error)
-//	}
-//	go manager.start()
-//	for {
-//		connection, _ := listener.Accept()
-//		if error != nil {
-//			logs.LogError(error)
-//		}
-//		client := &Pod{socket: connection, data: make(chan []byte)}
-//		manager.Register <- client
-//		go manager.receive(client)
-//		go manager.send(client)
-//	}
-//}
+func StartServer(manager PodManager) {
+	logs.LogInfo("Starting server...")
+	listener, error := net.Listen("tcp", ":3333")
+	if error != nil {
+		fmt.Println(error)
+	}
+	go manager.start()
+	for {
+		connection, _ := listener.Accept()
+		if error != nil {
+			logs.LogError(error)
+		}
+		client := &Pod{socket: connection, data: make(chan []byte)}
+		manager.Register <- client
+		go manager.receive(client)
+		go manager.send(client)
+	}
+}
 
-//func (manager *PodManager) start() {
-//	for {
-//		select {
-//		case connection := <-manager.Register:
-//			manager.Clients[connection] = true
-//			logs.LogInfo("Registering new pod")
-//		case connection := <-manager.Unregister:
-//			if _, ok := manager.Clients[connection]; ok {
-//				close(connection.data)
-//				delete(manager.Clients, connection)
-//				logs.LogInfo("A connection has terminated, removing pod!")
-//			}
-//		}
-//	}
-//}
-//
-//func (manager *PodManager) send(client *Pod) {
-//	defer client.socket.Close()
-//	for {
-//		select {
-//		case message, ok := <-client.data:
-//			if !ok {
-//				return
-//			}
-//			client.socket.Write(message)
-//		}
-//	}
-//}
-//
-//func (manager *PodManager) receive(client *Pod) {
-//	for {
-//		message := make([]byte, 4096)
-//		length, err := client.socket.Read(message)
-//		if err != nil {
-//			manager.Unregister <- client
-//			client.socket.Close()
-//			break
-//		}
-//		if length > 0 {
-//			client.metaData = string(message[:])
-//			logs.LogInfo("Received Data: " + strings.Replace(client.metaData, ";", "\n", -2))
-//		}
-//	}
-//}
+func (manager *PodManager) start() {
+	for {
+		select {
+		case connection := <-manager.Register:
+			manager.Clients[connection] = true
+			logs.LogInfo("Registering new pod")
+		case connection := <-manager.Unregister:
+			if _, ok := manager.Clients[connection]; ok {
+				close(connection.data)
+				delete(manager.Clients, connection)
+				logs.LogInfo("A connection has terminated, removing pod!")
+			}
+		}
+	}
+}
+
+func (manager *PodManager) send(client *Pod) {
+	defer client.socket.Close()
+	for {
+		select {
+		case message, ok := <-client.data:
+			if !ok {
+				return
+			}
+			client.socket.Write(message)
+		}
+	}
+}
+
+func (manager *PodManager) receive(client *Pod) {
+	for {
+		message := make([]byte, 4096)
+		length, err := client.socket.Read(message)
+		if err != nil {
+			manager.Unregister <- client
+			client.socket.Close()
+			break
+		}
+		if length > 0 {
+			client.metaData = string(message[:])
+			logs.LogInfo("Received Data: " + strings.Replace(client.metaData, ";", "\n", -2))
+		}
+	}
+}
