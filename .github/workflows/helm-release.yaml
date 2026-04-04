@@ -2,6 +2,7 @@ name: Release Helm Chart
 
 # Publishes the mycedrive Helm chart to GitHub Pages so users can install it with:
 #   helm repo add mycedrive https://paulosouzajr.github.io/mycedrive-k8s
+#   helm repo update
 #   helm install mycedrive mycedrive/mycedrive
 
 on:
@@ -19,27 +20,33 @@ jobs:
       contents: write   # needed to push to gh-pages branch
 
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Configure Git
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Install Helm
         uses: azure/setup-helm@v4
 
       - name: Package chart
         run: |
+          mkdir -p .chart-output
           helm package deployment/myce-server/mycedrive --destination .chart-output
 
-      - name: Publish to GitHub Pages
-        uses: helm/chart-releaser-action@v1.6.0
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
         with:
-          charts_dir: deployment/myce-server
-          skip_existing: true
-        env:
-          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ref: gh-pages
+          path: gh-pages
+
+      - name: Update Helm repo index
+        run: |
+          cp .chart-output/*.tgz gh-pages/
+          helm repo index gh-pages --url https://paulosouzajr.github.io/mycedrive-k8s --merge gh-pages/index.yaml
+
+      - name: Push to gh-pages
+        run: |
+          cd gh-pages
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --cached --quiet || git commit -m "helm: release $(ls ../.chart-output/*.tgz | xargs basename)"
+          git push origin gh-pages
