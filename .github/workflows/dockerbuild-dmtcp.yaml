@@ -1,11 +1,11 @@
-name: Build and Push Server Docker Image
+name: Build and Push DMTCP Docker Image
 
 on:
   push:
     branches: [main]
     paths:
-      - 'go-server/**'
-      - '.github/workflows/dockerbuild-server.yaml'
+      - 'dmtcp/Dockerfile'
+      - '.github/workflows/dockerbuild-dmtcp.yaml'
   workflow_dispatch:
     inputs:
       image_tag:
@@ -33,6 +33,6 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
-        context: go-server
+        context: dmtcp
         push: true
-        tags: mycedrive/go-server:${{ github.event.inputs.image_tag || 'dev' }}
+        tags: mycedrive/dmtcp:${{ github.event.inputs.image_tag || 'dev' }}

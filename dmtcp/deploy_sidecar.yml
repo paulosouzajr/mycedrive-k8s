@@ -15,6 +15,13 @@ spec:
       volumes:
       - name: dmtcp-shared
         emptyDir: {}
+      initContainers:
+      - name: dmtcp-init
+        image: prrsjunior/dmtcp:dev
+        command: ["sh", "-c", "cp -r /share/. /dmtcp/ && echo 'DMTCP binaries ready'"]
+        volumeMounts:
+        - name: dmtcp-shared
+          mountPath: /dmtcp
       containers:
       - name: mosquitto
         image: prrsjunior/mosquitto:arq1
@@ -22,20 +29,41 @@ spec:
         - containerPort: 9001
         - containerPort: 1883
         env:
+        - name: MIGR_COOR         # hostname to reach the MC REST API
+          value: mycedrive-coordinator.mig-ready.svc.cluster.local
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: START_UP          # Application startup command wrapped by DMTCP
+          value: "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf"
         - name: DMTCP_COORD_HOST
-          value: 127.0.0.1
+          value: "127.0.0.1"
         - name: DMTCP_CHECKPOINT_DIR
           value: /dmtcp/checkpoints
-        volumeMounts:
+        volumeMounts:             # Shared volume with DMTCP binaries
         - name: dmtcp-shared
           mountPath: /dmtcp
+        lifecycle:
+          preStop:
+            exec:
+              # end_container calls /remove and /copy on the MC
+              command:
+                - /dmtcp/bin/end_container
+                - mycedrive-coordinator.mig-ready.svc.cluster.local
+                - $(POD_NAME)
+                - /dmtcp/checkpoints
       - name: dmtcp
         image: prrsjunior/dmtcp:dev
-#        command: ["/dmtcp/bin/dmtcp_coordinator"]
-#        command: ["sleep 10000"]
         ports:
         - containerPort: 7779
-        volumeMounts:
+        env:
+        - name: DMTCP_CHECKPOINT_DIR
+          value: /dmtcp/checkpoints
+        volumeMounts:             # Shared volume with the DMTCP binaries
         - name: dmtcp-shared
-          mountPath: /share 
-
+          mountPath: /share

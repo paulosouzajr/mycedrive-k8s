@@ -1,3 +1,9 @@
+//go:build ignore
+// +build ignore
+
+// mount.go is part of the Docker reference overlay2 driver kept for reference only.
+// It is NOT compiled into the go-agent binary.
+
 package lib
 
 import (

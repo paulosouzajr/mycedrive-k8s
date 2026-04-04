@@ -1,0 +1,41 @@
+{{- if .Values.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "mycedrive.fullname" . }}-role
+  labels:
+    {{- include "mycedrive.labels" . | nindent 4 }}
+rules:
+  # Pods – list, watch and delete source pods during migration.
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log"]
+    verbs: ["get", "list", "watch", "delete"]
+  # Nodes – label source and destination nodes to control scheduling.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # Services – update selectors to reroute traffic after migration.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Deployments – scale up/down replicas and update node affinity.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "mycedrive.fullname" . }}-binding
+  labels:
+    {{- include "mycedrive.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "mycedrive.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "mycedrive.fullname" . }}-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

@@ -1,0 +1,166 @@
+###############################################################################
+# MyceDrive – DMTCP DaemonSet
+#
+# Deploys the DMTCP coordinator sidecar on *every* worker node so that any
+# application pod can reach a local coordinator via 127.0.0.1:7779.
+#
+# Architecture (see explanation file):
+#   • Each worker node runs one dmtcp-node-agent pod (this DaemonSet).
+#   • Application pods mount the shared /dmtcp-share volume to access the
+#     DMTCP binaries/libraries without embedding them in their own images.
+#   • The Migration Coordinator (go-server) orchestrates checkpoint / restore
+#     by calling the REST API exposed on each node.
+###############################################################################
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dmtcp-node-agent
+  namespace: mig-ready
+  labels:
+    app: dmtcp-node-agent
+    component: execution-agent
+spec:
+  selector:
+    matchLabels:
+      app: dmtcp-node-agent
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: dmtcp-node-agent
+        component: execution-agent
+    spec:
+      # Run on every node including control-plane nodes so the MC can always
+      # reach a coordinator.
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+
+      hostNetwork: false   # Keep pod network isolated; coordinator is accessed
+                           # within the pod via 127.0.0.1 for sidecar usage.
+
+      volumes:
+        # Shared volume that exposes DMTCP binaries to application containers.
+        # Pre-populated by an init-container so application images stay lean.
+        - name: dmtcp-share
+          emptyDir: {}
+
+        # Node-local checkpoint directory backed by the host path so that
+        # checkpoints survive pod restarts on the same node.
+        - name: checkpoint-storage
+          hostPath:
+            path: /var/lib/dmtcp/checkpoints
+            type: DirectoryOrCreate
+
+      initContainers:
+        # Populate the shared volume with DMTCP binaries from the DMTCP image
+        # so application containers do not need to embed them.
+        - name: dmtcp-init
+          image: prrsjunior/dmtcp:dev
+          command:
+            - sh
+            - -c
+            - |
+              echo "Copying DMTCP binaries to shared volume..."
+              cp -r /share/. /dmtcp-share/
+              echo "Done."
+          volumeMounts:
+            - name: dmtcp-share
+              mountPath: /dmtcp-share
+
+      containers:
+        # -----------------------------------------------------------------------
+        # DMTCP coordinator container
+        # Runs dmtcp_coordinator and listens on port 7779.
+        # -----------------------------------------------------------------------
+        - name: dmtcp-coordinator
+          image: prrsjunior/dmtcp:dev
+          command:
+            - /dmtcp/bin/dmtcp_coordinator
+            - --port
+            - "7779"
+            - --coord-logfile
+            - /dmtcp/checkpoints/coordinator.log
+          ports:
+            - name: dmtcp-coord
+              containerPort: 7779
+              protocol: TCP
+          env:
+            - name: DMTCP_CHECKPOINT_DIR
+              value: /dmtcp/checkpoints
+          volumeMounts:
+            - name: dmtcp-share
+              mountPath: /dmtcp
+            - name: checkpoint-storage
+              mountPath: /dmtcp/checkpoints
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          livenessProbe:
+            tcpSocket:
+              port: 7779
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            tcpSocket:
+              port: 7779
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+        # -----------------------------------------------------------------------
+        # go-agent (Execution Agent) sidecar
+        # Registers itself with the Migration Coordinator via REST and manages
+        # the container lifecycle (checkpoint / restore).
+        # -----------------------------------------------------------------------
+        - name: execution-agent
+          image: mycedrive/go-agent:dev
+          imagePullPolicy: Always
+          args:
+            - "/mnt/rootfs"   # rootDir  – overlay mount point
+            - "1"             # layerCount
+          env:
+            - name: MIGR_COOR
+              value: "mycedrive-coordinator.mig-ready.svc.cluster.local"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: DMTCP_COORD_HOST
+              value: "127.0.0.1"
+            - name: DMTCP_COORD_PORT
+              value: "7779"
+            - name: DMTCP_CHECKPOINT_DIR
+              value: /dmtcp/checkpoints
+          volumeMounts:
+            - name: dmtcp-share
+              mountPath: /dmtcp
+            - name: checkpoint-storage
+              mountPath: /dmtcp/checkpoints
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          lifecycle:
+            preStop:
+              exec:
+                # end_container calls utils.EndContainer which POSTs /remove and
+                # /copy to the MC before the container is terminated.
+                command:
+                  - /go-agent
+                  - end_container

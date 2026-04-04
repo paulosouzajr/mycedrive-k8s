@@ -1,0 +1,45 @@
+name: Release Helm Chart
+
+# Publishes the mycedrive Helm chart to GitHub Pages so users can install it with:
+#   helm repo add mycedrive https://paulosouzajr.github.io/mycedrive-k8s
+#   helm install mycedrive mycedrive/mycedrive
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deployment/myce-server/mycedrive/**'
+      - '.github/workflows/helm-release.yaml'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to push to gh-pages branch
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Package chart
+        run: |
+          helm package deployment/myce-server/mycedrive --destination .chart-output
+
+      - name: Publish to GitHub Pages
+        uses: helm/chart-releaser-action@v1.6.0
+        with:
+          charts_dir: deployment/myce-server
+          skip_existing: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,263 @@
+###############################################################################
+# MyceDrive – Namespace + RBAC
+#
+# Creates the mig-ready namespace and a ServiceAccount with the permissions
+# the Migration Coordinator (go-server) needs to:
+#   • List / watch / update Deployments
+#   • List / watch / delete Pods
+#   • List / get / update Services
+#   • List / get Nodes
+###############################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mig-ready
+  labels:
+    app.kubernetes.io/part-of: mycedrive
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mycedrive-coordinator
+  namespace: mig-ready
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mycedrive-coordinator-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mycedrive-coordinator-binding
+subjects:
+  - kind: ServiceAccount
+    name: mycedrive-coordinator
+    namespace: mig-ready
+roleRef:
+  kind: ClusterRole
+  name: mycedrive-coordinator-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+###############################################################################
+# Migration Coordinator – Service
+# Stable ClusterIP used by all Execution Agents to reach the MC REST API.
+###############################################################################
+apiVersion: v1
+kind: Service
+metadata:
+  name: mycedrive-coordinator
+  namespace: mig-ready
+  labels:
+    app: mycedrive-coordinator
+spec:
+  selector:
+    app: mycedrive-coordinator
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+  type: ClusterIP
+
+---
+###############################################################################
+# Migration Coordinator – Deployment (go-server)
+###############################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mycedrive-coordinator
+  namespace: mig-ready
+  labels:
+    app: mycedrive-coordinator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mycedrive-coordinator
+  template:
+    metadata:
+      labels:
+        app: mycedrive-coordinator
+    spec:
+      serviceAccountName: mycedrive-coordinator
+      containers:
+        - name: go-server
+          image: mycedrive/go-server:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - mountPath: /root/tmp
+              name: logs
+      volumes:
+        - name: logs
+          emptyDir: {}
+
+---
+###############################################################################
+# Example application pod specification
+#
+# Shows how a user application (mosquitto) is enriched with:
+#   1. An Execution Agent sidecar (go-agent)
+#   2. A DMTCP coordinator container
+#   3. A shared emptyDir volume for DMTCP binaries
+#
+# This mirrors Figure 1 and Listing 1 from the explanation file.
+###############################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mosquitto-app
+  namespace: mig-ready
+  labels:
+    app: mosquitto-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mosquitto-app
+  template:
+    metadata:
+      labels:
+        app: mosquitto-app
+    spec:
+      volumes:
+        # Shared volume: populated by the dmtcp container, consumed by the app
+        # container and the execution-agent sidecar.
+        - name: dmtcp-shared
+          emptyDir: {}
+
+      initContainers:
+        # Copies DMTCP binaries into the shared volume (~200 MB) so the app
+        # image does not need to embed them (see explanation § A).
+        - name: dmtcp-init
+          image: prrsjunior/dmtcp:dev
+          command: ["sh", "-c", "cp -r /share/. /dmtcp/ && echo 'DMTCP binaries ready'"]
+          volumeMounts:
+            - name: dmtcp-shared
+              mountPath: /dmtcp
+
+      containers:
+        # -----------------------------------------------------------------------
+        # Application container – enriched Mosquitto image
+        # Processes are started via dmtcp_launch (wrapped by the entry point).
+        # -----------------------------------------------------------------------
+        - name: mosquitto
+          image: prrsjunior/mosquitto:arq1
+          ports:
+            - containerPort: 1883
+              name: mqtt
+            - containerPort: 9001
+              name: websocket
+          env:
+            - name: MIGR_COOR
+              # EA will register with the MC using this hostname.
+              value: mycedrive-coordinator.mig-ready.svc.cluster.local
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: START_UP
+              value: "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf"
+            - name: DMTCP_COORD_HOST
+              value: "127.0.0.1"
+            - name: DMTCP_CHECKPOINT_DIR
+              value: /dmtcp/checkpoints
+          volumeMounts:
+            - name: dmtcp-shared
+              mountPath: /dmtcp
+          lifecycle:
+            preStop:
+              exec:
+                # end_container POSTs /remove and /copy to the MC before the
+                # container is allowed to terminate (see explanation § A).
+                command:
+                  - /dmtcp/bin/end_container
+                  - mycedrive-coordinator.mig-ready.svc.cluster.local
+                  - $(POD_NAME)
+                  - /dmtcp/checkpoints
+
+        # -----------------------------------------------------------------------
+        # DMTCP coordinator container (per-pod coordinator, port 7779)
+        # -----------------------------------------------------------------------
+        - name: dmtcp
+          image: prrsjunior/dmtcp:dev
+          ports:
+            - containerPort: 7779
+              name: dmtcp-coord
+          env:
+            - name: DMTCP_CHECKPOINT_DIR
+              value: /dmtcp/checkpoints
+          volumeMounts:
+            - name: dmtcp-shared
+              mountPath: /share
+
+---
+###############################################################################
+# Service for the mosquitto application
+# Provides a stable ClusterIP so clients keep communicating with the new pod
+# after migration (see explanation § C – Maintaining network routes).
+###############################################################################
+apiVersion: v1
+kind: Service
+metadata:
+  name: mosquitto-svc
+  namespace: mig-ready
+  labels:
+    app: mosquitto-app
+spec:
+  selector:
+    app: mosquitto-app
+  ports:
+    - name: mqtt
+      port: 1883
+      targetPort: 1883
+    - name: websocket
+      port: 9001
+      targetPort: 9001
+  type: ClusterIP

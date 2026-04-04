@@ -7,16 +7,23 @@ RUN go mod download
 
 COPY . .
 
-# Build the Go application statically to ensure compatibility with Alpine
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
+# Static binary – no libc required at runtime.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -a -installsuffix cgo \
+    -ldflags '-extldflags "-static"' \
+    -o go-server .
 
-FROM alpine:latest
+# ---- runtime image ----
+FROM alpine:3.19
 
-WORKDIR /root/
+RUN apk --no-cache add ca-certificates tzdata
 
-# Install necessary certificates
-RUN apk --no-cache add ca-certificates
+# go-server writes logs under /root/tmp
+RUN mkdir -p /root/tmp
+WORKDIR /root
 
-COPY --from=builder /app/main .
+COPY --from=builder /app/go-server .
 
-CMD ["./main"]
+EXPOSE 80
+
+ENTRYPOINT ["./go-server"]

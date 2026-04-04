@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"go-client/kub"
 	"go-client/logs"
-	"net"
 	"net/http"
 	"strings"
 
@@ -14,141 +13,225 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-type PodManager struct {
-	Clients    map[*Pod]bool
-	Register   chan *Pod
-	Unregister chan *Pod
-}
-
-var (
-	err       error
-	inter     kubernetes.Interface
-	clientset *kubernetes.Clientset
-)
-
-type Pod struct {
-	socket     net.Conn
+// pod tracks a registered application container.
+type pod struct {
 	mig        bool
-	metaData   string
 	podName    string
 	podAddress string
-	data       chan []byte
 }
 
+// Message is the JSON payload exchanged between the Execution Agent and the
+// Migration Coordinator on /register.
 type Message struct {
-	podName    string
-	podAddress string
-	isNew      bool
-	isMig      bool
+	PodName    string `json:"podName"`
+	PodAddress string `json:"podAddress"`
+	IsNew      bool   `json:"isNew"`
+	IsMig      bool   `json:"isMig"`
 }
 
-var pods []Pod
+// RemoveRequest is sent by the EA from the container preStop hook.
+type RemoveRequest struct {
+	PodName string `json:"podName"`
+}
 
+// RemoveResponse tells the EA whether to produce a DMTCP checkpoint before stopping.
+type RemoveResponse struct {
+	NeedsCheckpoint bool `json:"needsCheckpoint"`
+}
+
+// CopyNotification is sent by the source EA once checkpoint files are ready.
+type CopyNotification struct {
+	PodName       string `json:"podName"`
+	CheckpointDir string `json:"checkpointDir"`
+}
+
+// MigrateRequest is the JSON body for POST /migrate.
+type MigrateRequest struct {
+	Deployment string `json:"deployment"`
+	OriginNode string `json:"originNode"`
+	DestNode   string `json:"destNode"`
+	Label      string `json:"label"`
+}
+
+var pods []pod
+
+// RegisterPod handles POST /register.
+//
+// A container calls this when it starts. If the coordinator already holds a
+// record with the same pod name, a migration replica has started on the
+// destination node: the response carries IsMig=true so the EA blocks until
+// the checkpoint transfer is complete.
 func RegisterPod(c *gin.Context) {
-	var message Message
-
-	// Call BindJSON to bind the received JSON
-	if err := c.BindJSON(&message); err != nil {
+	var msg Message
+	if err := c.BindJSON(&msg); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
-	for _, a := range pods {
-		if a.podName == message.podName {
-			c.IndentedJSON(http.StatusOK, Message{podAddress: message.podAddress, isNew: false,
-				podName: message.podName, isMig: a.mig})
+	for _, p := range pods {
+		if p.podName == msg.PodName {
+			c.JSON(http.StatusOK, Message{
+				PodName:    msg.PodName,
+				PodAddress: msg.PodAddress,
+				IsNew:      false,
+				IsMig:      p.mig,
+			})
 			return
 		}
 	}
-	newPod := Pod{podName: message.podName, podAddress: message.podAddress, mig: false, metaData: ""}
-	// Add the new album to the slice.
-	pods = append(pods, newPod)
-	c.IndentedJSON(http.StatusCreated, newPod)
+
+	pods = append(pods, pod{podName: msg.PodName, podAddress: msg.PodAddress})
+	c.JSON(http.StatusCreated, Message{
+		PodName:    msg.PodName,
+		PodAddress: msg.PodAddress,
+		IsNew:      true,
+		IsMig:      false,
+	})
 }
 
-func MigratePod(c *gin.Context) {
-	podName := c.Param("deployment")
-	origin := c.Param("originNode")
-	dest := c.Param("destNode")
-
-	inter, err = expK8sClient("http://192.168.1.118:8080", "../minikube/config")
-
-	logs.LogError(err)
-
-	kub.GetPodsInterface(inter)
-	kub.GetPods(clientset)
-
-	config, err := rest.InClusterConfig()
-	logs.LogError(err)
-
-	podExist := false
-
-	for _, a := range pods {
-		if a.podName == podName {
-			a.mig, podExist = true, true
-		}
-	}
-
-	if !podExist {
-		c.IndentedJSON(http.StatusNotFound, "Pod doesn't exist")
+// RemovePod handles POST /remove.
+//
+// Called by the EA from the container preStop hook. Returns whether the EA
+// must produce a DMTCP checkpoint before the container stops. A checkpoint
+// is only required when the pod has been marked for migration.
+func RemovePod(c *gin.Context) {
+	var req RemoveRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
-	print(config)
-	migrate(config, podName, "mig-ready", origin, dest)
+	for i, p := range pods {
+		if p.podName == req.PodName {
+			c.JSON(http.StatusOK, RemoveResponse{NeedsCheckpoint: pods[i].mig})
+			return
+		}
+	}
 
-	c.IndentedJSON(http.StatusOK, true)
-
+	c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("pod %q not registered", req.PodName)})
 }
 
-func migrate(config *rest.Config, deployment string, label string, currentNode string, destNode string) {
-	if containsEmpty(deployment, label, currentNode, destNode) {
-		logs.LogError(fmt.Errorf("missing parameters: %s %s %s %s", deployment, label, currentNode, destNode))
+// CopyCheckpoint handles POST /copy.
+//
+// The source EA calls this after writing checkpoint files to disk. The
+// coordinator marks the pod so that when the destination EA calls /register
+// it receives IsMig=true and knows the checkpoint is on the way.
+//
+// In the prototype the byte transfer is performed by the EA pair directly
+// over TCP (SendFile / ReceiveData). This endpoint is the coordination
+// signal that gates the destination EA.
+func CopyCheckpoint(c *gin.Context) {
+	var notif CopyNotification
+	if err := c.BindJSON(&notif); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
 	}
 
-	// creates the clientset
-	clientset, err = kubernetes.NewForConfig(config)
-
-	cNode := kub.FindNode(clientset, currentNode)
-	dNode := kub.FindNode(clientset, destNode)
-
-	//Validate the labels format
-	if len(strings.Split(label, ":")) != 2 {
-		logs.LogError(fmt.Errorf("incorrect label format. Use: label:content"))
+	found := false
+	for i := range pods {
+		if pods[i].podName == notif.PodName {
+			pods[i].mig = true
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("pod %q not registered", notif.PodName)})
+		return
 	}
 
-	// Remove labels from the older deployment
-	kub.AddNodeLabels(cNode, map[string]string{
-		strings.Split(label, ":")[0]: ""})
-
-	// Add new labels to the desired node
-	kub.AddNodeLabels(dNode, map[string]string{
-		strings.Split(label, ":")[0]: strings.Split(label, ":")[1]})
-
-	// Increase the amount of pods of that deployment to two
-	if kub.ScaleUp(clientset, deployment) {
-		logs.LogInfo("Scale up executed")
-	} else {
-		logs.LogError(fmt.Errorf("scale up error"))
-	}
-
-	// Request termination of the old pod
-	if kub.DeletePod(clientset, deployment) {
-		logs.LogInfo("Delete pod executed")
-	} else {
-		logs.LogError(fmt.Errorf("delete pod error"))
-	}
-
+	logs.LogInfo(fmt.Sprintf("checkpoint acknowledged: pod=%s dir=%s", notif.PodName, notif.CheckpointDir))
+	c.JSON(http.StatusOK, gin.H{"status": "copy_initiated", "pod": notif.PodName})
 }
 
-func expK8sClient(masterUrl, kubeconfigPath string) (kubernetes.Interface, error) {
-	// use the current context in kubeconfig
-	config, err := clientcmd.BuildConfigFromFlags(masterUrl, kubeconfigPath)
+// MigratePod handles POST /migrate.
+//
+// Accepts a JSON body: {"deployment", "originNode", "destNode", "label"}.
+// label defaults to "mig-ready:true" and must follow the key:value format.
+func MigratePod(c *gin.Context) {
+	var req MigrateRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if containsEmpty(req.Deployment, req.OriginNode, req.DestNode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "deployment, originNode and destNode are required"})
+		return
+	}
+	if req.Label == "" {
+		req.Label = "mig-ready:true"
+	}
+
+	found := false
+	for i := range pods {
+		if pods[i].podName == req.Deployment {
+			pods[i].mig = true
+			found = true
+		}
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("deployment %q not registered", req.Deployment)})
+		return
+	}
+
+	config, err := k8sConfig()
 	if err != nil {
-		return nil, err
+		logs.LogError(err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	// create the clientset
-	return kubernetes.NewForConfig(config)
+	if err := migrate(config, req.Deployment, req.Label, req.OriginNode, req.DestNode); err != nil {
+		logs.LogError(err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "migration_started", "deployment": req.Deployment})
+}
+
+// migrate performs the Kubernetes steps to move a deployment replica from
+// currentNode to destNode:
+//  1. Clears the placement label on the source node, sets it on the destination.
+//  2. Scales up the deployment so Kubernetes creates the destination pod.
+//  3. Deletes the source pod, triggering the preStop checkpoint flow in the EA.
+func migrate(config *rest.Config, deployment, label, currentNode, destNode string) error {
+	parts := strings.SplitN(label, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("label %q must be key:value", label)
+	}
+
+	cs, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("kubernetes client: %w", err)
+	}
+
+	srcNode := kub.FindNode(cs, currentNode)
+	dstNode := kub.FindNode(cs, destNode)
+	kub.AddNodeLabels(cs, srcNode, map[string]string{parts[0]: ""})
+	kub.AddNodeLabels(cs, dstNode, map[string]string{parts[0]: parts[1]})
+
+	if !kub.ScaleUp(cs, deployment) {
+		return fmt.Errorf("scale up failed for %q", deployment)
+	}
+	logs.LogInfo(fmt.Sprintf("scaled up deployment %q", deployment))
+
+	if !kub.DeletePod(cs, deployment) {
+		return fmt.Errorf("delete source pod failed for %q", deployment)
+	}
+	logs.LogInfo(fmt.Sprintf("source pod deleted for deployment %q", deployment))
+
+	return nil
+}
+
+// k8sConfig returns in-cluster credentials when available, falling back to
+// the local kubeconfig for development.
+func k8sConfig() (*rest.Config, error) {
+	cfg, err := rest.InClusterConfig()
+	if err == nil {
+		return cfg, nil
+	}
+	return clientcmd.BuildConfigFromFlags("", "../minikube/config")
 }
 
 func containsEmpty(ss ...string) bool {
@@ -158,68 +241,4 @@ func containsEmpty(ss ...string) bool {
 		}
 	}
 	return false
-}
-
-func StartServer(manager PodManager) {
-	logs.LogInfo("Starting server...")
-	listener, error := net.Listen("tcp", ":3333")
-	if error != nil {
-		fmt.Println(error)
-	}
-	go manager.start()
-	for {
-		connection, _ := listener.Accept()
-		if error != nil {
-			logs.LogError(error)
-		}
-		client := &Pod{socket: connection, data: make(chan []byte)}
-		manager.Register <- client
-		go manager.receive(client)
-		go manager.send(client)
-	}
-}
-
-func (manager *PodManager) start() {
-	for {
-		select {
-		case connection := <-manager.Register:
-			manager.Clients[connection] = true
-			logs.LogInfo("Registering new pod")
-		case connection := <-manager.Unregister:
-			if _, ok := manager.Clients[connection]; ok {
-				close(connection.data)
-				delete(manager.Clients, connection)
-				logs.LogInfo("A connection has terminated, removing pod!")
-			}
-		}
-	}
-}
-
-func (manager *PodManager) send(client *Pod) {
-	defer client.socket.Close()
-	for {
-		select {
-		case message, ok := <-client.data:
-			if !ok {
-				return
-			}
-			client.socket.Write(message)
-		}
-	}
-}
-
-func (manager *PodManager) receive(client *Pod) {
-	for {
-		message := make([]byte, 4096)
-		length, err := client.socket.Read(message)
-		if err != nil {
-			manager.Unregister <- client
-			client.socket.Close()
-			break
-		}
-		if length > 0 {
-			client.metaData = string(message[:])
-			logs.LogInfo("Received Data: " + strings.Replace(client.metaData, ";", "\n", -2))
-		}
-	}
 }

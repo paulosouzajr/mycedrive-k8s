@@ -14,7 +14,7 @@ type Layer struct {
 	rootLayer int
 }
 
-func (l Layer) CreateLayer() bool {
+func (l *Layer) CreateLayer() bool {
 	log.Printf("Creating layer at level: %d over %s\n", l.level, l.RootDir)
 	l.level += 1
 
@@ -27,7 +27,7 @@ func (l Layer) CreateLayer() bool {
 
 	utils.Run("mkdir", "-p "+fmt.Sprintf("/data/u%d /data/w%d /data/o1%d", l.level, l.level, l.level))
 
-	utils.Run("mount", "-t "+fmt.Sprintf("overlay overlay -o1 lowerdir=%s,upperdir=/data/u%d,workdir=/data/w%d /data/o1%d", strings.Join(lowLayers, ":"), l.level, l.level, l.level))
+	utils.Run("mount", "-t "+fmt.Sprintf("overlay overlay -o lowerdir=%s,upperdir=/data/u%d,workdir=/data/w%d /data/o1%d", strings.Join(lowLayers, ":"), l.level, l.level, l.level))
 
 	utils.Run("umount", "-l "+l.RootDir)
 
@@ -36,7 +36,7 @@ func (l Layer) CreateLayer() bool {
 	return true
 }
 
-func (l Layer) Init() bool {
+func (l *Layer) Init() bool {
 	log.Printf("Init overlay over %s\n", l.RootDir)
 
 	lowLayers, err := filepath.Glob("/data/o1*")
@@ -53,12 +53,12 @@ func (l Layer) Init() bool {
 
 	utils.Run("mkdir", "-p "+fmt.Sprintf(" /data/u%d /data/w%d /data/o1%d", l.level, l.level, l.level))
 
-	utils.Run("mount", "-t "+fmt.Sprintf("overlay overlay -o1 lowerdir=%s,upperdir=/data/u%d,workdir=/data/w%d /data/o1%d", strings.Join(lowLayers, ":"), l.level, l.level, l.level))
+	utils.Run("mount", "-t "+fmt.Sprintf("overlay overlay -o lowerdir=%s,upperdir=/data/u%d,workdir=/data/w%d /data/o1%d", strings.Join(lowLayers, ":"), l.level, l.level, l.level))
 
 	return true
 }
 
-func (l Layer) Finish() bool {
+func (l *Layer) Finish() bool {
 	log.Printf("Finish overlay with levels: %d from %s\n", l.level, l.RootDir)
 
 	return true

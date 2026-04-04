@@ -3,36 +3,101 @@ package utils
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
+	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// Run executes command with the given space-separated args string and returns stdout.
 func Run(command string, args string) []byte {
-	log.Println("running: ", command, args)
-
 	cmd := exec.Command(command, strings.Fields(args)...)
-	stdout, err := cmd.Output()
-
+	out, err := cmd.Output()
 	if err != nil {
-		log.Printf("failed to run command: %s %s\n", err.Error(), stdout)
+		log.Printf("command %q %q failed: %v", command, args, err)
 	}
-
-	return stdout
+	return out
 }
 
+// RemoveRequest is the payload sent to POST /remove.
+type RemoveRequest struct {
+	PodName string `json:"podName"`
+}
+
+// RemoveResponse is the response from POST /remove.
+type RemoveResponse struct {
+	NeedsCheckpoint bool `json:"needsCheckpoint"`
+}
+
+// CopyNotification is the payload sent to POST /copy.
+type CopyNotification struct {
+	PodName       string `json:"podName"`
+	CheckpointDir string `json:"checkpointDir"`
+}
+
+// EndContainer implements the preStop lifecycle hook. It calls /remove on the
+// Migration Coordinator to determine whether this shutdown is part of a
+// migration. If so it waits for DMTCP to write checkpoint files then calls
+// /copy to signal that the coordinator can authorise the destination EA.
+func EndContainer(coordAddr, podName, checkpointDir string) error {
+	body, err := postJSON(fmt.Sprintf("http://%s/remove", coordAddr), RemoveRequest{PodName: podName})
+	if err != nil {
+		return fmt.Errorf("POST /remove: %w", err)
+	}
+
+	var resp RemoveResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("parse /remove response: %w", err)
+	}
+
+	if !resp.NeedsCheckpoint {
+		log.Println("normal termination, no checkpoint required")
+		return nil
+	}
+
+	log.Println("migration termination, requesting DMTCP checkpoint")
+	Run("dmtcp_command", "--checkpoint")
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		matches, _ := filepath.Glob(checkpointDir + "/*.dmtcp")
+		if len(matches) > 0 {
+			log.Printf("checkpoint ready: %v", matches)
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if _, err = postJSON(fmt.Sprintf("http://%s/copy", coordAddr), CopyNotification{
+		PodName:       podName,
+		CheckpointDir: checkpointDir,
+	}); err != nil {
+		return fmt.Errorf("POST /copy: %w", err)
+	}
+
+	log.Println("checkpoint acknowledged, container stopping")
+	return nil
+}
+
+// ReceiveData listens on TCP :2486 and writes the first incoming gzip-compressed
+// payload to /tmp/dat2. Used by the destination EA to receive checkpoint data.
 func ReceiveData() bool {
 	listener, err := net.Listen("tcp", ":2486")
 	if err != nil {
 		log.Fatal(err)
 	}
 	done := make(chan struct{})
-	log.Println("Server listening on: " + listener.Addr().String())
+	log.Println("listening for checkpoint data on", listener.Addr())
 
 	go func() {
 		defer func() { done <- struct{}{} }()
@@ -42,89 +107,106 @@ func ReceiveData() bool {
 				log.Println(err)
 				return
 			}
-			go func(c net.Conn) {
-				defer func() {
-					c.Close()
-					done <- struct{}{}
-				}()
-				buf := make([]byte, 1024)
-				f, err := os.Create("/tmp/dat2")
-				check(err)
-				defer f.Close()
-				for {
-					n, err := c.Read(buf)
-					if err != nil {
-						if err != io.EOF {
-							log.Println(err)
-						}
-						return
-					}
-					log.Printf("received: %q", buf[:n])
-					log.Printf("bytes: %d", n)
-					dBuf, err := decompress(buf[:n])
-					check(err)
-					f.Write(dBuf)
-				}
-
-			}(conn)
+			go receiveConn(conn, done)
 		}
 	}()
 
 	<-done
-
 	return true
 }
 
-func decompress(obj []byte) ([]byte, error) {
-	r, err := gzip.NewReader(bytes.NewReader(obj))
+func receiveConn(c net.Conn, done chan struct{}) {
+	defer func() {
+		c.Close()
+		done <- struct{}{}
+	}()
+
+	f, err := os.Create("/tmp/dat2")
+	if err != nil {
+		log.Println("create /tmp/dat2:", err)
+		return
+	}
+	defer f.Close()
+
+	buf := make([]byte, 1024)
+	for {
+		n, err := c.Read(buf)
+		if n > 0 {
+			dec, derr := decompress(buf[:n])
+			if derr != nil {
+				log.Println("decompress:", derr)
+				return
+			}
+			f.Write(dec)
+		}
+		if err != nil {
+			if err != io.EOF {
+				log.Println(err)
+			}
+			return
+		}
+	}
+}
+
+// SendFile compresses the file at filePath+"/o"+num with gzip and sends it
+// over TCP to podAddr. Used by the source EA to transfer checkpoint data.
+func SendFile(filePath string, podAddr string, num int) {
+	conn, err := net.Dial("tcp", podAddr)
+	if err != nil {
+		log.Fatal("dial:", err)
+	}
+	defer conn.Close()
+
+	file, err := os.Open(filePath + "/o" + strconv.Itoa(num))
+	if err != nil {
+		log.Fatal("open:", err)
+	}
+	defer file.Close()
+
+	pr, pw := io.Pipe()
+	w, err := gzip.NewWriterLevel(pw, 7)
+	if err != nil {
+		log.Fatal("gzip writer:", err)
+	}
+
+	go func() {
+		if _, err := io.Copy(w, file); err != nil {
+			log.Fatal("compress:", err)
+		}
+		w.Close()
+		pw.Close()
+	}()
+
+	n, err := io.Copy(conn, pr)
+	if err != nil {
+		log.Fatal("send:", err)
+	}
+	log.Printf("sent %d bytes to %s", n, podAddr)
+}
+
+func postJSON(url string, payload interface{}) ([]byte, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	resp, err := httpClient.Post(url, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("http post %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s returned HTTP %d", url, resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func decompress(b []byte) ([]byte, error) {
+	r, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
-	res, err := ioutil.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-	return res, nil
+	return io.ReadAll(r)
 }
 
-func SendFile(filePath string, podAddr string, num int) {
-	//var wg sync.WaitGroup
-	//wg.Add(1)
-	println("Starting to send data")
-
-	conn, err := net.Dial("tcp", podAddr)
-	check(err)
-	log.Println("Connected to server.")
-
-	file, err := os.Open(filePath + "/o" + strconv.Itoa(num))
-	check(err)
-
-	pr, pw := io.Pipe()
-	w, err := gzip.NewWriterLevel(pw, 7)
-	check(err)
-	go func() {
-		n, err := io.Copy(w, file)
-		if err != nil {
-			log.Fatal(err)
-		}
-		w.Close()
-		pw.Close()
-		log.Printf("copied to piped writer via the compressed writer: %d", n)
-
-	}()
-
-	n, err := io.Copy(conn, pr)
-	check(err)
-	log.Printf("copied to connection: %d", n)
-
-	conn.Close()
-
-}
-
-func check(e error) {
-	if e != nil {
-		log.Println(e)
-		log.Fatal(e)
-	}
-}
+// RemoveRequest mirrors the server-side payload for POST /remove.
