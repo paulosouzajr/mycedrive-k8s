@@ -7,6 +7,7 @@ import (
 	"go-agent/overlay"
 	"go-agent/utils"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,10 +17,11 @@ import (
 
 // Message mirrors the server-side struct for JSON serialisation.
 type Message struct {
-	PodName    string `json:"podName"`
-	PodAddress string `json:"podAddress"`
-	IsNew      bool   `json:"isNew"`
-	IsMig      bool   `json:"isMig"`
+	PodName       string `json:"podName"`
+	PodAddress    string `json:"podAddress"`
+	ContainerPort int    `json:"containerPort,omitempty"`
+	IsNew         bool   `json:"isNew"`
+	IsMig         bool   `json:"isMig"`
 }
 
 // CopyNotification is sent to the /copy endpoint once a checkpoint is ready.
@@ -29,8 +31,9 @@ type CopyNotification struct {
 }
 
 const (
-	defaultCoordAddr = "http://localhost:80"
-	httpTimeout      = 30 * time.Second
+	defaultCoordAddr    = "http://localhost:80"
+	defaultTransferPort = 2486
+	httpTimeout         = 30 * time.Second
 )
 
 var httpClient = &http.Client{Timeout: httpTimeout}
@@ -82,12 +85,23 @@ func runAgent() {
 	}
 
 	ovLayer := overlay.Layer{RootDir: rootDir}
+	transferPort := defaultTransferPort
+	if rawPort := os.Getenv("CONTAINER_PORT"); rawPort != "" {
+		parsedPort, parseErr := strconv.Atoi(rawPort)
+		if parseErr != nil || parsedPort <= 0 || parsedPort > 65535 {
+			log.Printf("Invalid CONTAINER_PORT=%q, using default %d", rawPort, defaultTransferPort)
+		} else {
+			transferPort = parsedPort
+		}
+	}
+	podIP := os.Getenv("POD_IP")
 
 	registerMsg := Message{
-		PodAddress: os.Getenv("POD_IP"),
-		PodName:    os.Getenv("POD_NAME"),
-		IsNew:      true,
-		IsMig:      false,
+		PodAddress:    net.JoinHostPort(podIP, strconv.Itoa(transferPort)),
+		ContainerPort: transferPort,
+		PodName:       os.Getenv("POD_NAME"),
+		IsNew:         true,
+		IsMig:         false,
 	}
 	log.Printf("Registering container with MC at %s: %+v", coordAddr, registerMsg)
 
@@ -104,20 +118,25 @@ func runAgent() {
 	log.Printf("Register response from MC: %+v", response)
 
 	if response.IsMig {
-		log.Println("Pod is migration target â€” waiting for checkpoint transfer")
+		log.Println("Pod is migration target : waiting for checkpoint transfer")
 		utils.ReceiveData()
 		log.Println("Checkpoint received, initialising overlay")
 		ovLayer.Init()
 	} else if response.IsNew {
-		log.Println("Fresh start â€” initialising overlay")
+		log.Println("Fresh start : initialising overlay")
 		ovLayer.Init()
 	} else {
-		log.Printf("Source pod â€” creating %d layer(s) and sending to %s", layerCount, response.PodAddress)
+		if response.PodAddress == registerMsg.PodAddress {
+			log.Println("Non-migration duplicate registration detected; skipping transfer and initialising overlay")
+			ovLayer.Init()
+			return
+		}
+		log.Printf("Source pod : creating %d layer(s) and sending to %s", layerCount, response.PodAddress)
 		for num := 0; num < layerCount; num++ {
 			ovLayer.CreateLayer()
 			utils.SendFile(rootDir, response.PodAddress, num)
 		}
-		log.Println("Checkpoint files sent â€” notifying MC via /copy")
+		log.Println("Checkpoint files sent : notifying MC via /copy")
 		if _, err := postJSON(coordAddr+"/copy", CopyNotification{
 			PodName:       registerMsg.PodName,
 			CheckpointDir: rootDir,

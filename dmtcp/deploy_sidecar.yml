@@ -17,7 +17,7 @@ spec:
         emptyDir: {}
       initContainers:
       - name: dmtcp-init
-        image: prrsjunior/dmtcp:dev
+        image: mycedrive/dmtcp:dev
         command: ["sh", "-c", "cp -r /share/. /dmtcp/ && echo 'DMTCP binaries ready'"]
         volumeMounts:
         - name: dmtcp-shared
@@ -30,7 +30,7 @@ spec:
         - containerPort: 1883
         env:
         - name: MIGR_COOR         # hostname to reach the MC REST API
-          value: mycedrive-coordinator.mig-ready.svc.cluster.local
+          value: mycedrive.mig-ready.svc.cluster.local
         - name: POD_NAME
           valueFrom:
             fieldRef:
@@ -54,11 +54,11 @@ spec:
               # end_container calls /remove and /copy on the MC
               command:
                 - /dmtcp/bin/end_container
-                - mycedrive-coordinator.mig-ready.svc.cluster.local
+                - mycedrive.mig-ready.svc.cluster.local
                 - $(POD_NAME)
                 - /dmtcp/checkpoints
       - name: dmtcp
-        image: prrsjunior/dmtcp:dev
+        image: mycedrive/dmtcp:dev
         ports:
         - containerPort: 7779
         env:

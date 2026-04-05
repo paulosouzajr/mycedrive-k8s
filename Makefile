@@ -20,8 +20,10 @@
 DOCKERHUB_ORG ?= mycedrive
 TAG        ?= dev
 NAMESPACE  ?= mig-ready
+PULL_IMAGES ?= false
 HELM_CHART  = deployment/myce-server/mycedrive
 HELM_REL    = mycedrive
+COORDINATOR_HOST ?= $(HELM_REL).$(NAMESPACE).svc.cluster.local
 
 # Docker Hub image references  (docker.io/mycedrive/<name>:<tag>)
 IMG_SERVER  = $(DOCKERHUB_ORG)/go-server:$(TAG)
@@ -31,6 +33,7 @@ IMG_DMTCP   = $(DOCKERHUB_ORG)/dmtcp:$(TAG)
 .PHONY: all build push deploy undeploy \
         build-server build-agent build-dmtcp \
         push-server push-agent push-dmtcp \
+        prepare-images \
         login minikube-setup minikube-build test lint clean
 
 ##############################################################################
@@ -101,7 +104,22 @@ minikube-build:
 	  docker build -t $(IMG_SERVER)  ./go-server
 
 ##############################################################################
+# Prepare images (build locally or pull from registry)
+##############################################################################
+prepare-images:
+ifeq ($(PULL_IMAGES),true)
+	@echo "==> Pulling images from registry"
+	docker pull $(IMG_SERVER)
+	docker pull $(IMG_AGENT)
+	docker pull $(IMG_DMTCP)
+else
+	@echo "==> Building images locally"
+	$(MAKE) build
+endif
+
+##############################################################################
 # Deploy – Helm (Migration Coordinator) + raw manifests (DMTCP DaemonSet)
+# Note: Images should already be available (built/pulled) before deploying
 ##############################################################################
 deploy: deploy-coordinator deploy-daemonset deploy-app
 
@@ -112,16 +130,24 @@ deploy-coordinator:
 	  --create-namespace \
 	  --set image.repository=$(DOCKERHUB_ORG)/go-server \
 	  --set image.tag=$(TAG) \
+	  --set dmtcp.image.repository=$(DOCKERHUB_ORG)/dmtcp \
+	  --set dmtcp.image.tag=$(TAG) \
 	  --set image.pullPolicy=IfNotPresent \
 	  --wait
 
 deploy-daemonset:
 	@echo "==> Applying DMTCP DaemonSet"
 	kubectl apply -f dmtcp/dmtcp-daemonset.yml --namespace $(NAMESPACE)
+	@echo "==> Setting DaemonSet images and coordinator endpoint"
+	kubectl patch daemonset dmtcp-node-agent --namespace $(NAMESPACE) --type='strategic' \
+	  -p '{"spec":{"template":{"spec":{"initContainers":[{"name":"dmtcp-init","image":"$(IMG_DMTCP)"}],"containers":[{"name":"dmtcp-coordinator","image":"$(IMG_DMTCP)"},{"name":"execution-agent","image":"$(IMG_AGENT)","env":[{"name":"MIGR_COOR","value":"$(COORDINATOR_HOST)"}]}]}}}}'
 
 deploy-app:
 	@echo "==> Applying example application (mosquitto + DMTCP sidecar)"
 	kubectl apply -f dmtcp/deploy_sidecar.yml --namespace $(NAMESPACE)
+	@echo "==> Setting app DMTCP images and coordinator endpoint"
+	kubectl patch deployment mosquitto-app --namespace $(NAMESPACE) --type='strategic' \
+	  -p '{"spec":{"template":{"spec":{"initContainers":[{"name":"dmtcp-init","image":"$(IMG_DMTCP)"}],"containers":[{"name":"mosquitto","env":[{"name":"MIGR_COOR","value":"$(COORDINATOR_HOST)"}],"lifecycle":{"preStop":{"exec":{"command":["/dmtcp/bin/end_container","$(COORDINATOR_HOST)","$$(POD_NAME)","/dmtcp/checkpoints"]}}}},{"name":"dmtcp","image":"$(IMG_DMTCP)"}]}}}}'
 
 ##############################################################################
 # Full stack deploy (alternative to Helm for the prototype)

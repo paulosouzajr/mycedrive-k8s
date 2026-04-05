@@ -172,7 +172,7 @@ spec:
         # Copies DMTCP binaries into the shared volume (~200 MB) so the app
         # image does not need to embed them (see explanation § A).
         - name: dmtcp-init
-          image: prrsjunior/dmtcp:dev
+          image: mycedrive/dmtcp:dev
           command: ["sh", "-c", "cp -r /share/. /dmtcp/ && echo 'DMTCP binaries ready'"]
           volumeMounts:
             - name: dmtcp-shared
@@ -193,7 +193,7 @@ spec:
           env:
             - name: MIGR_COOR
               # EA will register with the MC using this hostname.
-              value: mycedrive-coordinator.mig-ready.svc.cluster.local
+              value: mycedrive.mig-ready.svc.cluster.local
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -218,7 +218,7 @@ spec:
                 # container is allowed to terminate (see explanation § A).
                 command:
                   - /dmtcp/bin/end_container
-                  - mycedrive-coordinator.mig-ready.svc.cluster.local
+                  - mycedrive.mig-ready.svc.cluster.local
                   - $(POD_NAME)
                   - /dmtcp/checkpoints
 
@@ -226,7 +226,7 @@ spec:
         # DMTCP coordinator container (per-pod coordinator, port 7779)
         # -----------------------------------------------------------------------
         - name: dmtcp
-          image: prrsjunior/dmtcp:dev
+          image: mycedrive/dmtcp:dev
           ports:
             - containerPort: 7779
               name: dmtcp-coord

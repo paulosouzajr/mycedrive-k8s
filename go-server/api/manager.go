@@ -23,10 +23,11 @@ type pod struct {
 // Message is the JSON payload exchanged between the Execution Agent and the
 // Migration Coordinator on /register.
 type Message struct {
-	PodName    string `json:"podName"`
-	PodAddress string `json:"podAddress"`
-	IsNew      bool   `json:"isNew"`
-	IsMig      bool   `json:"isMig"`
+	PodName       string `json:"podName"`
+	PodAddress    string `json:"podAddress"`
+	ContainerPort int    `json:"containerPort,omitempty"`
+	IsNew         bool   `json:"isNew"`
+	IsMig         bool   `json:"isMig"`
 }
 
 // RemoveRequest is sent by the EA from the container preStop hook.
@@ -71,10 +72,11 @@ func RegisterPod(c *gin.Context) {
 	for _, p := range pods {
 		if p.podName == msg.PodName {
 			c.JSON(http.StatusOK, Message{
-				PodName:    msg.PodName,
-				PodAddress: msg.PodAddress,
-				IsNew:      false,
-				IsMig:      p.mig,
+				PodName:       msg.PodName,
+				PodAddress:    p.podAddress,
+				ContainerPort: msg.ContainerPort,
+				IsNew:         false,
+				IsMig:         p.mig,
 			})
 			return
 		}

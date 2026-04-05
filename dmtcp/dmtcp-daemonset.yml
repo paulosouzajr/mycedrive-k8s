@@ -61,7 +61,7 @@ spec:
         # Populate the shared volume with DMTCP binaries from the DMTCP image
         # so application containers do not need to embed them.
         - name: dmtcp-init
-          image: prrsjunior/dmtcp:dev
+          image: mycedrive/dmtcp:dev
           command:
             - sh
             - -c
@@ -79,7 +79,7 @@ spec:
         # Runs dmtcp_coordinator and listens on port 7779.
         # -----------------------------------------------------------------------
         - name: dmtcp-coordinator
-          image: prrsjunior/dmtcp:dev
+          image: mycedrive/dmtcp:dev
           command:
             - /dmtcp/bin/dmtcp_coordinator
             - --port
@@ -129,7 +129,7 @@ spec:
             - "1"             # layerCount
           env:
             - name: MIGR_COOR
-              value: "mycedrive-coordinator.mig-ready.svc.cluster.local"
+              value: "mycedrive.mig-ready.svc.cluster.local"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
