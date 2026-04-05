@@ -3,10 +3,10 @@ entries:
   mycedrive:
   - apiVersion: v2
     appVersion: dev
-    created: "2026-04-04T15:42:16.594294775Z"
+    created: "2026-04-05T01:52:06.060338138Z"
     description: 'MyceDrive Migration Coordinator – deploys the REST API that orchestrates
       stateful Kubernetes pod migration using DMTCP checkpointing. '
-    digest: 8e5aa8293d9029b4044d4b1f0ecfa774439f24df8c9691576baca527671f42c9
+    digest: 1553998da5fb4457fc196d8af0b798c5e7174eca95388271470be699ec29dc9c
     home: https://github.com/paulosouzajr/mycedrive-k8s
     keywords:
     - migration
@@ -23,4 +23,4 @@ entries:
     urls:
     - https://paulosouzajr.github.io/mycedrive-k8s/mycedrive-0.1.0.tgz
     version: 0.1.0
-generated: "2026-04-04T15:42:16.593751797Z"
+generated: "2026-04-05T01:52:06.05941198Z"
