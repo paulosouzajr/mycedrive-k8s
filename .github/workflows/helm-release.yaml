@@ -10,6 +10,7 @@ on:
     branches: [main]
     paths:
       - 'deployment/myce-server/mycedrive/**'
+      - 'deployment/operator/**'
       - '.github/workflows/helm-release.yaml'
   workflow_dispatch:
 
@@ -26,10 +27,11 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v4
 
-      - name: Package chart
+      - name: Package charts
         run: |
           mkdir -p .chart-output
           helm package deployment/myce-server/mycedrive --destination .chart-output
+          helm package deployment/operator --destination .chart-output
 
       - name: Checkout gh-pages
         uses: actions/checkout@v4

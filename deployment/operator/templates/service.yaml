@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mycedrive-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mycedrive-operator.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "mycedrive-operator.selectorLabels" . | nindent 4 }}
+{{- if .Values.service.legacyAlias.enabled }}
+---
+# Legacy alias: agents configured with
+# MIGR_COOR=mycedrive.<namespace>.svc.cluster.local keep working.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.service.legacyAlias.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mycedrive-operator.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "mycedrive-operator.selectorLabels" . | nindent 4 }}
+{{- end }}

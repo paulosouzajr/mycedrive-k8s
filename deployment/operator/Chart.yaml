@@ -1,0 +1,22 @@
+apiVersion: v2
+name: mycedrive-operator
+description: |
+  MyceDrive Operator – Kubernetes operator orchestrating stateful pod
+  migration (DMTCP process checkpointing + overlayfs volume layers) through
+  MigratableWorkload and Migration CRDs. Embeds the Migration Coordinator
+  REST API consumed by the Execution Agents.
+type: application
+version: 0.1.0
+appVersion: "dev"
+keywords:
+  - migration
+  - dmtcp
+  - checkpoint
+  - stateful
+  - operator
+home: https://github.com/paulosouzajr/mycedrive-k8s
+sources:
+  - https://github.com/paulosouzajr/mycedrive-k8s
+maintainers:
+  - name: paulosouzajr
+    url: https://github.com/paulosouzajr

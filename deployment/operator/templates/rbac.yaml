@@ -1,0 +1,62 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "mycedrive-operator.fullname" . }}-role
+  labels:
+    {{- include "mycedrive-operator.labels" . | nindent 4 }}
+rules:
+  # Pods – resolve source/destination pods and delete the source to trigger
+  # the preStop checkpoint flow.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  # Nodes – manage the placement label steering migration scheduling.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Events – emit reconcile events.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Services – reroute traffic to the destination pod during migration.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Workloads – validate references and scale Deployments up/down.
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets/scale", "deployments/scale"]
+    verbs: ["get", "update", "patch"]
+  # MyceDrive CRDs.
+  - apiGroups: ["mycedrive.io"]
+    resources: ["migratableworkloads", "migrations"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["mycedrive.io"]
+    resources: ["migratableworkloads/status", "migrations/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["mycedrive.io"]
+    resources: ["migratableworkloads/finalizers", "migrations/finalizers"]
+    verbs: ["update"]
+  # Leader election.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "mycedrive-operator.fullname" . }}-binding
+  labels:
+    {{- include "mycedrive-operator.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "mycedrive-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "mycedrive-operator.fullname" . }}-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

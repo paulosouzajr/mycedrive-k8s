@@ -1,0 +1,115 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: migrations.mycedrive.io
+spec:
+  group: mycedrive.io
+  names:
+    kind: Migration
+    listKind: MigrationList
+    plural: migrations
+    singular: migration
+    shortNames:
+      - mig
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Workload
+          type: string
+          jsonPath: .spec.workloadName
+        - name: Pod
+          type: string
+          jsonPath: .status.sourcePod
+        - name: Source
+          type: string
+          jsonPath: .spec.sourceNode
+        - name: Target
+          type: string
+          jsonPath: .spec.targetNode
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          description: >-
+            Migration is one request to move a pod of a MigratableWorkload
+            from sourceNode to targetNode while preserving process and/or
+            volume state.
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - workloadName
+                - sourceNode
+                - targetNode
+              properties:
+                workloadName:
+                  description: Name of a MigratableWorkload in the same namespace.
+                  type: string
+                podName:
+                  description: >-
+                    Pod of the workload to migrate; defaults to the workload's
+                    pod running on sourceNode.
+                  type: string
+                sourceNode:
+                  type: string
+                targetNode:
+                  type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Syncing
+                    - Checkpointing
+                    - Transferring
+                    - Restoring
+                    - Completed
+                    - Failed
+                message:
+                  type: string
+                sourcePod:
+                  type: string
+                destinationPod:
+                  type: string
+                checkpointDir:
+                  type: string
+                processMigration:
+                  type: boolean
+                volumeMigration:
+                  type: boolean
+                syncRounds:
+                  type: integer
+                  format: int32
+                syncRound:
+                  type: integer
+                  format: int32
+                scaledUp:
+                  type: boolean
+                startTime:
+                  type: string
+                  format: date-time
+                completionTime:
+                  type: string
+                  format: date-time
+                lastTransitionTime:
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true

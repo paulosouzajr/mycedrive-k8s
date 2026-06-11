@@ -1,0 +1,82 @@
+# Default values for the MyceDrive operator chart.
+
+replicaCount: 1
+
+image:
+  repository: mycedrive/operator
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  # Name of the service account to use; generated from the fullname template
+  # when empty and create is true.
+  name: ""
+
+# ClusterRole + ClusterRoleBinding for pods/nodes/workloads/CRDs.
+rbac:
+  create: true
+
+# Leader election (enable when running more than one replica; the REST API
+# stays active on every replica regardless).
+leaderElection:
+  enabled: false
+
+# Namespace used for Migration objects created through the legacy REST API
+# (POST /migrate without an explicit namespace).
+defaultNamespace: mig-ready
+
+# REST API service. Port 80 keeps existing MIGR_COOR values working; the
+# container listens on 8080.
+service:
+  type: ClusterIP
+  port: 80
+  # Extra service with the legacy Migration Coordinator name "mycedrive" so
+  # agents configured with mycedrive.<ns>.svc.cluster.local keep resolving.
+  legacyAlias:
+    enabled: true
+    name: mycedrive
+
+# Controller-runtime metrics endpoint ("0" disables).
+metrics:
+  bindAddress: "0"
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: probes
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: probes
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

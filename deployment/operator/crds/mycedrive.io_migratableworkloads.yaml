@@ -1,0 +1,147 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: migratableworkloads.mycedrive.io
+spec:
+  group: mycedrive.io
+  names:
+    kind: MigratableWorkload
+    listKind: MigratableWorkloadList
+    plural: migratableworkloads
+    singular: migratableworkload
+    shortNames:
+      - mw
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Kind
+          type: string
+          jsonPath: .spec.workloadRef.kind
+        - name: Workload
+          type: string
+          jsonPath: .spec.workloadRef.name
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          description: >-
+            MigratableWorkload represents a wrapped StatefulSet (primary) or
+            Deployment whose pods run the MyceDrive Execution Agent and can be
+            migrated between nodes with DMTCP process checkpointing and/or
+            overlayfs volume-layer checkpointing.
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - workloadRef
+              properties:
+                workloadRef:
+                  description: Workload wrapped by the Execution Agent.
+                  type: object
+                  required:
+                    - kind
+                    - name
+                  properties:
+                    kind:
+                      type: string
+                      enum:
+                        - StatefulSet
+                        - Deployment
+                    name:
+                      type: string
+                placementLabel:
+                  description: >-
+                    Node label steering pod placement during migration; must
+                    match the workload's nodeSelector.
+                  type: object
+                  properties:
+                    key:
+                      type: string
+                      default: mig-ready
+                    value:
+                      type: string
+                      default: "true"
+                checkpointDir:
+                  description: Directory where DMTCP writes checkpoint images.
+                  type: string
+                  default: /dmtcp/checkpoints
+                transferPort:
+                  description: TCP port the Execution Agent listens on for transfers.
+                  type: integer
+                  format: int32
+                  default: 2486
+                layerCount:
+                  description: Number of overlayfs layers exported during migration.
+                  type: integer
+                  format: int32
+                  default: 1
+                processMigration:
+                  description: >-
+                    Toggle DMTCP process-memory checkpoint/restore (ICFEC 2022
+                    MyceDrive mechanism).
+                  type: boolean
+                  default: true
+                volumeMigration:
+                  description: >-
+                    Toggle overlayfs volume-layer checkpointing and transfer
+                    (CloudCom 2020 mechanism).
+                  type: boolean
+                  default: true
+                preSyncRounds:
+                  description: >-
+                    Iterative overlay snapshot transfer rounds performed before
+                    downtime (volume migration pre-copy). 0 disables pre-sync.
+                  type: integer
+                  format: int32
+                  default: 1
+                  minimum: 0
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                message:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                registeredPods:
+                  description: Execution Agent registrations mirrored from the operator registry.
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - name
+                    properties:
+                      name:
+                        type: string
+                      address:
+                        type: string
+                      containerPort:
+                        type: integer
+                        format: int32
+                      node:
+                        type: string
+                      migrating:
+                        type: boolean
+                      checkpointReady:
+                        type: boolean
+                      checkpointDir:
+                        type: string
+                      restored:
+                        type: boolean
+                      registeredAt:
+                        type: string
+                        format: date-time
