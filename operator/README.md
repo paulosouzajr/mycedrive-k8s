@@ -24,6 +24,15 @@ Legacy agent contract (unchanged shapes): `POST /register`, `POST /remove`,
 `GET /pods` (legacy shape), `GET /api/v1/pods`, `GET+POST /api/v1/migrations`,
 dashboard at `/dashboard/`.
 
+History & metrics module (optional, on by default): `GET /api/v1/history`
+returns the recorded migrations (per-phase steps with durations, downtime
+window, workload accessibility) plus aggregate metrics (success rate, average
+duration/downtime, per-phase averages). `GET+POST /api/v1/history/config`
+reads/toggles collection at runtime (`{"enabled": true|false}`); the
+`--history-enabled` / `--history-limit` flags (Helm: `history.enabled`,
+`history.limit`) set the start-up state and the in-memory record cap.
+History is rebuilt coarsely from Migration CRs after a restart.
+
 ## Build
 
 ```sh

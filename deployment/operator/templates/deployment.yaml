@@ -41,6 +41,8 @@ spec:
             - --metrics-bind-address={{ .Values.metrics.bindAddress }}
             - --leader-elect={{ .Values.leaderElection.enabled }}
             - --default-namespace={{ .Values.defaultNamespace }}
+            - --history-enabled={{ .Values.history.enabled }}
+            - --history-limit={{ .Values.history.limit }}
           ports:
             - name: http
               containerPort: 8080
