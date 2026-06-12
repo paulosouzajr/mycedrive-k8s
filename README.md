@@ -36,10 +36,14 @@ Read this before deploying:
 ```sh
 helm repo add mycedrive https://paulosouzajr.github.io/mycedrive-k8s
 helm repo update
-helm install mycedrive-operator mycedrive/mycedrive-operator --version 0.1.0
+helm install mycedrive-operator mycedrive/mycedrive-operator \
+  --namespace mig-ready --create-namespace --version 0.1.1
 ```
 
 Pin `--version` to a released chart; omit it only if you want the latest.
+Installing into `mig-ready` matches the defaults used by the example
+scenarios and `make-migratable.sh` (`MIGR_COOR=mycedrive.mig-ready.svc.cluster.local`);
+if you pick another namespace, set `MIGR_COOR` accordingly in your workloads.
 
 Or from the local chart:
 
@@ -144,9 +148,6 @@ make build-agent    # docker image mycedrive/go-agent
 make build-dmtcp    # docker image mycedrive/dmtcp (sidecar)
 docker build -t mycedrive/operator:dev operator/
 ```
-
-Images are published to `docker.io/mycedrive/` automatically by GitHub Actions on pushes to `main`; the Helm chart is released to GitHub Pages by the same pipeline.
-
 ## Repository Layout
 
 ```
