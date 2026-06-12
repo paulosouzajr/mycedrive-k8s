@@ -109,6 +109,26 @@
     .status-bar.ok { color: #6ee7b7; }
     .status-bar.err { color: #fca5a5; }
     .refresh-hint { font-size: 0.75rem; color: #475569; margin-top: 1.5rem; text-align: right; }
+    .card h2 .toggle {
+      margin-left: auto;
+      padding: 0.2rem 0.7rem;
+      font-size: 0.7rem;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .chip {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 0.4rem;
+      padding: 0.3rem 0.7rem;
+      font-size: 0.75rem;
+      color: #94a3b8;
+    }
+    .chip b { color: #e2e8f0; font-weight: 600; }
+    .steps { font-size: 0.75rem; color: #94a3b8; line-height: 1.6; }
+    .steps .sep { color: #475569; }
+    .badge-down { background: #5f1e1e; color: #fca5a5; }
   </style>
 </head>
 <body>
@@ -169,6 +189,31 @@
         </thead>
         <tbody id="migrations-body">
           <tr><td colspan="7" class="empty">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Migration history & metrics (optional module) -->
+    <div class="card wide-card">
+      <h2><span class="dot"></span>Migration History &amp; Metrics
+        <button class="toggle" id="history-toggle" onclick="toggleHistory()" disabled>...</button>
+      </h2>
+      <div class="chips" id="history-summary"></div>
+      <table id="history-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Workload</th>
+            <th>Source &rarr; Target</th>
+            <th>Steps (duration)</th>
+            <th>Total</th>
+            <th>Downtime</th>
+            <th>Access</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="history-body">
+          <tr><td colspan="8" class="empty">Loading...</td></tr>
         </tbody>
       </table>
     </div>
@@ -260,6 +305,99 @@
       return `<tr><td colspan="${cols}" class="empty">${msg}</td></tr>`;
     }
 
+    function fmtMs(ms) {
+      if (ms == null) return '';
+      if (ms < 1000) return ms + ' ms';
+      if (ms < 60000) return (ms / 1000).toFixed(1) + ' s';
+      return Math.floor(ms / 60000) + 'm ' + Math.round((ms % 60000) / 1000) + 's';
+    }
+
+    function accessBadge(rec) {
+      if (rec.phase === 'Completed') return '<span class="badge badge-ok">accessible</span>';
+      if (rec.phase === 'Failed') return '<span class="badge badge-failed">not ready</span>';
+      return rec.accessible
+        ? '<span class="badge badge-ok">accessible</span>'
+        : '<span class="badge badge-down">not ready</span>';
+    }
+
+    function renderHistoryRow(rec) {
+      const steps = (rec.steps || [])
+        .map(st => `${esc(st.phase)} <b>${fmtMs(st.durationMs)}</b>`)
+        .join(' <span class="sep">&rarr;</span> ');
+      const stepsCell = rec.seeded
+        ? '<span class="empty">recorded before operator restart</span>'
+        : (steps || '<span class="empty">no steps yet</span>');
+      return `<tr>
+        <td>${esc(rec.name)}</td>
+        <td>${esc(rec.workload || '')}</td>
+        <td>${esc(rec.sourceNode || '')} &rarr; ${esc(rec.targetNode || '')}</td>
+        <td class="steps">${stepsCell}</td>
+        <td>${fmtMs(rec.totalMs)}</td>
+        <td>${fmtMs(rec.downtimeMs)}</td>
+        <td>${accessBadge(rec)}</td>
+        <td>${phaseBadge(rec.phase)}</td>
+      </tr>`;
+    }
+
+    function renderHistorySummary(s) {
+      if (!s) return '';
+      const chips = [
+        `total <b>${s.total}</b>`,
+        `active <b>${s.active}</b>`,
+        `completed <b>${s.completed}</b>`,
+        `failed <b>${s.failed}</b>`,
+        `success rate <b>${Math.round((s.successRate || 0) * 100)}%</b>`,
+        `avg duration <b>${fmtMs(s.avgTotalMs)}</b>`,
+        `avg downtime <b>${fmtMs(s.avgDowntimeMs)}</b>`,
+      ];
+      for (const [phase, ms] of Object.entries(s.phaseAvgMs || {})) {
+        chips.push(`avg ${esc(phase)} <b>${fmtMs(ms)}</b>`);
+      }
+      return chips.map(c => `<span class="chip">${c}</span>`).join('');
+    }
+
+    let historyEnabled = null;
+
+    function renderHistoryToggle() {
+      const btn = document.getElementById('history-toggle');
+      if (historyEnabled === null) { btn.disabled = true; btn.textContent = '...'; return; }
+      btn.disabled = false;
+      btn.textContent = historyEnabled ? 'Disable' : 'Enable';
+    }
+
+    async function refreshHistory() {
+      try {
+        const data = await fetchJSON('/api/v1/history');
+        historyEnabled = !!data.enabled;
+        renderHistoryToggle();
+        if (!data.enabled) {
+          document.getElementById('history-summary').innerHTML = '';
+          document.getElementById('history-body').innerHTML =
+            emptyRow(8, 'Metrics module disabled — use the Enable button to start collecting');
+          return;
+        }
+        document.getElementById('history-summary').innerHTML = renderHistorySummary(data.summary);
+        const records = (data.migrations || []).slice().reverse();
+        document.getElementById('history-body').innerHTML =
+          records.length ? records.map(renderHistoryRow).join('') : emptyRow(8, 'No migrations recorded yet');
+      } catch (e) {
+        document.getElementById('history-body').innerHTML = emptyRow(8, 'Error: ' + e.message);
+      }
+    }
+
+    async function toggleHistory() {
+      const btn = document.getElementById('history-toggle');
+      btn.disabled = true;
+      try {
+        await fetch(BASE + '/api/v1/history/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !historyEnabled }),
+        });
+      } catch (e) { /* surfaced by the next refresh */ }
+      await refreshHistory();
+    }
+
     async function refresh() {
       try {
         const data = await fetchJSON('/api/v1/pods');
@@ -291,6 +429,8 @@
       } catch (e) {
         document.getElementById('migrations-body').innerHTML = emptyRow(7, 'Error: ' + e.message);
       }
+
+      await refreshHistory();
 
       document.getElementById('last-refresh').textContent =
         'Last refresh: ' + new Date().toLocaleTimeString();

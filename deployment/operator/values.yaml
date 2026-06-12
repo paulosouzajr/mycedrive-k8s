@@ -47,6 +47,14 @@ service:
 metrics:
   bindAddress: "0"
 
+# Migration history & metrics module: per-phase durations, downtime and
+# accessibility tracking served at /api/v1/history and shown in the
+# dashboard. Also toggleable at runtime (POST /api/v1/history/config).
+history:
+  enabled: true
+  # Maximum number of migrations kept in the in-memory history.
+  limit: 100
+
 podAnnotations: {}
 podLabels: {}
 

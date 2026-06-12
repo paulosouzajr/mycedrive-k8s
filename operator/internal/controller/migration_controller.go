@@ -16,6 +16,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mycedrivev1alpha1 "github.com/paulosouzajr/mycedrive-k8s/operator/api/v1alpha1"
+	"github.com/paulosouzajr/mycedrive-k8s/operator/pkg/history"
 	"github.com/paulosouzajr/mycedrive-k8s/operator/pkg/registry"
 )
 
@@ -38,6 +39,8 @@ type MigrationReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Registry *registry.Registry
+	// History is the optional metrics module; nil when not wired.
+	History *history.Store
 }
 
 // +kubebuilder:rbac:groups=mycedrive.io,resources=migrations,verbs=get;list;watch;create;update;patch;delete
@@ -377,10 +380,74 @@ func (r *MigrationReconciler) setPhase(ctx context.Context, mig *mycedrivev1alph
 	if err := r.Status().Update(ctx, mig); err != nil {
 		return ctrl.Result{}, err
 	}
+	r.recordHistory(mig, now.Time)
 	if mig.Status.IsTerminal() {
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+}
+
+// recordHistory forwards a persisted phase transition to the metrics module.
+func (r *MigrationReconciler) recordHistory(mig *mycedrivev1alpha1.Migration, at time.Time) {
+	if r.History == nil {
+		return
+	}
+	r.History.RecordTransition(history.Transition{
+		Namespace:        mig.Namespace,
+		Name:             mig.Name,
+		Workload:         mig.Spec.WorkloadName,
+		SourcePod:        mig.Status.SourcePod,
+		DestinationPod:   mig.Status.DestinationPod,
+		SourceNode:       mig.Spec.SourceNode,
+		TargetNode:       mig.Spec.TargetNode,
+		ProcessMigration: mig.Status.ProcessMigration,
+		VolumeMigration:  mig.Status.VolumeMigration,
+		Phase:            string(mig.Status.Phase),
+		Message:          mig.Status.Message,
+		Time:             at,
+	})
+}
+
+// SeedHistory rebuilds coarse history records (phase, start/completion — no
+// per-step detail) from existing Migration CRs. Called once at startup with
+// an uncached reader so the metrics module survives operator restarts.
+func SeedHistory(ctx context.Context, reader client.Reader, store *history.Store) error {
+	var list mycedrivev1alpha1.MigrationList
+	if err := reader.List(ctx, &list); err != nil {
+		return err
+	}
+	records := make([]history.Record, 0, len(list.Items))
+	for i := range list.Items {
+		mig := &list.Items[i]
+		rec := history.Record{
+			Name:             mig.Name,
+			Namespace:        mig.Namespace,
+			Workload:         mig.Spec.WorkloadName,
+			SourcePod:        mig.Status.SourcePod,
+			DestinationPod:   mig.Status.DestinationPod,
+			SourceNode:       mig.Spec.SourceNode,
+			TargetNode:       mig.Spec.TargetNode,
+			ProcessMigration: mig.Status.ProcessMigration,
+			VolumeMigration:  mig.Status.VolumeMigration,
+			Phase:            string(mig.Status.Phase),
+			Message:          mig.Status.Message,
+		}
+		if rec.Phase == "" {
+			rec.Phase = string(mycedrivev1alpha1.MigrationPhasePending)
+		}
+		if mig.Status.StartTime != nil {
+			rec.StartedAt = mig.Status.StartTime.Time
+		} else {
+			rec.StartedAt = mig.CreationTimestamp.Time
+		}
+		if mig.Status.CompletionTime != nil {
+			t := mig.Status.CompletionTime.Time
+			rec.CompletedAt = &t
+		}
+		records = append(records, rec)
+	}
+	store.Seed(records)
+	return nil
 }
 
 // fail moves the migration to the terminal Failed phase.

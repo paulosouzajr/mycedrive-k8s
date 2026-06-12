@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/paulosouzajr/mycedrive-k8s/operator/dashboard"
+	"github.com/paulosouzajr/mycedrive-k8s/operator/pkg/history"
 	"github.com/paulosouzajr/mycedrive-k8s/operator/pkg/registry"
 )
 
@@ -28,6 +29,8 @@ type Server struct {
 	Addr             string
 	DefaultNamespace string
 	Log              logr.Logger
+	// History is the optional migration-metrics module; nil when not wired.
+	History *history.Store
 }
 
 // Handler returns the fully-routed HTTP handler. Exported so functional
@@ -93,6 +96,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/pods", s.handleAPIPods)
 	mux.HandleFunc("GET /api/v1/migrations", s.handleAPIMigrations)
 	mux.HandleFunc("POST /api/v1/migrations", s.handleMigrate)
+
+	// Migration history & metrics (optional module).
+	mux.HandleFunc("GET /api/v1/history", s.handleHistory)
+	mux.HandleFunc("GET /api/v1/history/config", s.handleHistoryConfigGet)
+	mux.HandleFunc("POST /api/v1/history/config", s.handleHistoryConfigSet)
 
 	// Embedded static dashboard.
 	mux.Handle("GET /dashboard/", http.StripPrefix("/dashboard/", http.FileServerFS(dashboard.FS)))
