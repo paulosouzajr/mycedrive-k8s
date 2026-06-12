@@ -95,7 +95,7 @@ jobs:
           git push origin gh-pages
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: .chart-output/*.tgz
           generate_release_notes: true
