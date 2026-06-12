@@ -2,6 +2,14 @@
 # Provides the dmtcp_coordinator binary and exposes the full DMTCP
 # installation under /share so application sidecars can mount it
 # without embedding the ~200 MB binaries in their own images.
+
+# Execution Agent image: its /go-agent binary is bundled into /share/bin so
+# the dmtcp-init initContainer distributes it together with the DMTCP
+# binaries (entrypoints call /dmtcp/bin/go-agent, preStop hooks call
+# /dmtcp/bin/end_container).
+ARG AGENT_IMAGE=mycedrive/go-agent:dev
+FROM ${AGENT_IMAGE} AS agent
+
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -27,6 +35,10 @@ RUN ./configure --prefix=/usr && make -j"$(nproc)" && make install
 RUN mkdir -p /share/bin /share/lib
 RUN cp -r /usr/bin/dmtcp_* /share/bin/ && \
     cp -r /usr/lib/dmtcp   /share/lib/  2>/dev/null || true
+
+# MyceDrive Execution Agent + its end_container preStop alias.
+COPY --from=agent /go-agent /share/bin/go-agent
+RUN ln -s /share/bin/go-agent /share/bin/end_container
 
 # Checkpoint output directory (override via DMTCP_CHECKPOINT_DIR env var).
 RUN mkdir -p /dmtcp/checkpoints

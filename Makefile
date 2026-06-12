@@ -29,7 +29,7 @@ IMG_AGENT    = $(DOCKERHUB_ORG)/go-agent:$(TAG)
 IMG_DMTCP    = $(DOCKERHUB_ORG)/dmtcp:$(TAG)
 
 .PHONY: all build push deploy undeploy \
-        build-operator build-agent build-dmtcp \
+        build-operator build-agent build-dmtcp build-example \
         push-operator push-agent push-dmtcp \
         prepare-images \
         login minikube-setup minikube-build test lint clean
@@ -48,7 +48,9 @@ login:
 ##############################################################################
 # Build images
 ##############################################################################
-build: build-dmtcp build-agent build-operator
+# build-agent must run before build-dmtcp: the dmtcp image bundles the
+# go-agent binary into /share/bin via COPY --from=mycedrive/go-agent.
+build: build-agent build-dmtcp build-operator
 
 build-operator:
 	@echo "==> Building Operator (Migration Coordinator) → $(IMG_OPERATOR)"
@@ -63,10 +65,17 @@ build-agent:
 	  ./go-agent
 
 build-dmtcp:
-	@echo "==> Building DMTCP image → $(IMG_DMTCP)"
+	@echo "==> Building DMTCP image (bundles go-agent) → $(IMG_DMTCP)"
 	docker build \
+	  --build-arg AGENT_IMAGE=$(IMG_AGENT) \
 	  -t $(IMG_DMTCP) \
 	  ./dmtcp
+
+build-example:
+	@echo "==> Building example Mosquitto image → $(DOCKERHUB_ORG)/mosquitto:$(TAG)"
+	docker build \
+	  -t $(DOCKERHUB_ORG)/mosquitto:$(TAG) \
+	  ./examples/mosquitto_d
 
 ##############################################################################
 # Push images
@@ -97,8 +106,8 @@ minikube-setup:
 minikube-build:
 	@echo "==> Building images inside minikube Docker daemon"
 	eval $$(minikube docker-env) && \
-	  docker build -t $(IMG_DMTCP)    ./dmtcp  && \
 	  docker build -t $(IMG_AGENT)    ./go-agent && \
+	  docker build -t $(IMG_DMTCP)    ./dmtcp  && \
 	  docker build -t $(IMG_OPERATOR) ./operator
 
 ##############################################################################

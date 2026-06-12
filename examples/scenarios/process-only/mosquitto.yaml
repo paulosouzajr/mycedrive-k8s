@@ -1,0 +1,119 @@
+# Scenario "process-only": DMTCP process migration, no volume migration.
+# Persistence is OFF, so the retained message exists ONLY in the broker's
+# memory — it survives the migration solely because DMTCP checkpoints and
+# restores the process. No privileged container needed (no overlay mount).
+# Apply with: kubectl apply -n <namespace> -f .
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mq-proc-config
+data:
+  mosquitto.conf: |
+    log_dest stdout
+    persistence false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mq-proc
+spec:
+  clusterIP: None
+  selector:
+    app: mq-proc
+  ports:
+    - name: mqtt
+      port: 1883
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mq-proc
+spec:
+  serviceName: mq-proc
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mq-proc
+  template:
+    metadata:
+      labels:
+        app: mq-proc
+        mig-ready: "true"
+    spec:
+      volumes:
+        - name: dmtcp-shared
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: mq-proc-config
+      initContainers:
+        - name: dmtcp-init
+          image: mycedrive/dmtcp:dev
+          command: ["sh", "-c", "cp -r /share/. /dmtcp/ && echo 'DMTCP + agent binaries ready'"]
+          volumeMounts:
+            - name: dmtcp-shared
+              mountPath: /dmtcp
+      containers:
+        - name: mosquitto
+          image: mycedrive/mosquitto:dev
+          ports:
+            - containerPort: 1883
+              name: mqtt
+            - containerPort: 2486
+              name: transfer
+          env:
+            - name: MIGR_COOR
+              value: mycedrive.mig-ready.svc.cluster.local
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: START_UP
+              value: "/usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf"
+            - name: DMTCP_COORD_HOST
+              value: "127.0.0.1"
+            - name: DMTCP_COORD_PORT
+              value: "7779"
+            - name: DMTCP_CHECKPOINT_DIR
+              value: /dmtcp/checkpoints
+            - name: CONTAINER_PORT
+              value: "2486"
+            - name: ENABLE_PROCESS_MIGRATION
+              value: "true"
+            - name: ENABLE_VOLUME_MIGRATION
+              value: "false"
+          volumeMounts:
+            - name: dmtcp-shared
+              mountPath: /dmtcp
+            - name: config
+              mountPath: /mosquitto/config
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/dmtcp/bin/end_container"]
+        - name: dmtcp
+          image: mycedrive/dmtcp:dev
+          ports:
+            - containerPort: 7779
+          env:
+            - name: DMTCP_CHECKPOINT_DIR
+              value: /dmtcp/checkpoints
+          volumeMounts:
+            - name: dmtcp-shared
+              mountPath: /share
+---
+apiVersion: mycedrive.io/v1alpha1
+kind: MigratableWorkload
+metadata:
+  name: mq-proc
+spec:
+  workloadRef:
+    kind: StatefulSet
+    name: mq-proc
+  processMigration: true
+  volumeMigration: false
