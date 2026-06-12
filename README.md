@@ -148,16 +148,6 @@ make build-agent    # docker image mycedrive/go-agent
 make build-dmtcp    # docker image mycedrive/dmtcp (sidecar)
 docker build -t mycedrive/operator:dev operator/
 ```
-
-**Release model** — one tag does everything:
-
-- Pushes to `main` publish development images (`mycedrive/*:dev`) only — no
-  chart is published from `main`.
-- Pushing a tag (`git tag v0.2.0 && git push origin v0.2.0`) runs the release
-  pipeline: versioned + `latest` images for all three components, the Helm
-  chart at the same version on GitHub Pages, and a GitHub Release with the
-  chart attached and generated notes.
-
 ## Repository Layout
 
 ```
