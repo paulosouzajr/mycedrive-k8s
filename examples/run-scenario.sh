@@ -78,6 +78,12 @@ fi
 ###############################################################################
 say "Preflight checks"
 command -v kubectl >/dev/null || fail "kubectl not found"
+if ! kubectl get ns >/dev/null 2>&1; then
+  kubectl get ns 2>&1 | head -3
+  fail "kubectl cannot reach the cluster — check credentials. On k3s hosts,
+kubectl may default to the root-owned /etc/rancher/k3s/k3s.yaml; try
+'export KUBECONFIG=\$HOME/.kube/config' or fix the file permissions."
+fi
 kubectl get crd migrations.mycedrive.io >/dev/null 2>&1 \
   || fail "Migration CRD not found — install the operator first (see README)"
 kubectl get ns "$NAMESPACE" >/dev/null 2>&1 \
