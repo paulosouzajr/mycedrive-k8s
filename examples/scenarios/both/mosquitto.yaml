@@ -1,0 +1,132 @@
+# Scenario "both": process (DMTCP) + volume (overlay) migration together.
+# State lives in BOTH places: the broker's memory (subscriptions, retained
+# messages, open client sockets) moves via DMTCP; the persistence database
+# (mosquitto.db) moves via overlay volume layers.
+# Apply with: kubectl apply -n <namespace> -f .
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mq-both-config
+data:
+  mosquitto.conf: |
+    log_dest stdout
+    persistence true
+    persistence_location /mosquitto/data/
+    autosave_interval 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mq-both
+spec:
+  clusterIP: None
+  selector:
+    app: mq-both
+  ports:
+    - name: mqtt
+      port: 1883
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mq-both
+spec:
+  serviceName: mq-both
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mq-both
+  template:
+    metadata:
+      labels:
+        app: mq-both
+        mig-ready: "true"
+    spec:
+      volumes:
+        - name: dmtcp-shared
+          emptyDir: {}
+        - name: layers          # overlay layer storage (DATA_DIR)
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: mq-both-config
+      initContainers:
+        - name: dmtcp-init
+          image: mycedrive/dmtcp:dev
+          command: ["sh", "-c", "cp -r /share/. /dmtcp/ && echo 'DMTCP + agent binaries ready'"]
+          volumeMounts:
+            - name: dmtcp-shared
+              mountPath: /dmtcp
+      containers:
+        - name: mosquitto
+          image: mycedrive/mosquitto:dev
+          securityContext:
+            privileged: true    # the overlay mount syscall needs CAP_SYS_ADMIN
+          ports:
+            - containerPort: 1883
+              name: mqtt
+            - containerPort: 2486
+              name: transfer
+          env:
+            - name: MIGR_COOR
+              value: mycedrive.mig-ready.svc.cluster.local
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: START_UP
+              value: "/usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf"
+            - name: DMTCP_COORD_HOST
+              value: "127.0.0.1"
+            - name: DMTCP_COORD_PORT
+              value: "7779"
+            - name: DMTCP_CHECKPOINT_DIR
+              value: /dmtcp/checkpoints
+            - name: CONTAINER_PORT
+              value: "2486"
+            - name: ENABLE_PROCESS_MIGRATION
+              value: "true"
+            - name: ENABLE_VOLUME_MIGRATION
+              value: "true"
+            - name: VOLUME_ROOT_DIR   # overlay mountpoint = the app data dir
+              value: /mosquitto/data
+            - name: DATA_DIR          # where the overlay layers are stored
+              value: /layers
+          volumeMounts:
+            - name: dmtcp-shared
+              mountPath: /dmtcp
+            - name: layers
+              mountPath: /layers
+            - name: config
+              mountPath: /mosquitto/config
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/dmtcp/bin/end_container"]
+        - name: dmtcp
+          image: mycedrive/dmtcp:dev
+          ports:
+            - containerPort: 7779
+          env:
+            - name: DMTCP_CHECKPOINT_DIR
+              value: /dmtcp/checkpoints
+          volumeMounts:
+            - name: dmtcp-shared
+              mountPath: /share
+---
+apiVersion: mycedrive.io/v1alpha1
+kind: MigratableWorkload
+metadata:
+  name: mq-both
+spec:
+  workloadRef:
+    kind: StatefulSet
+    name: mq-both
+  processMigration: true
+  volumeMigration: true
+  preSyncRounds: 1

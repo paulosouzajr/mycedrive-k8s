@@ -51,12 +51,19 @@ This installs the CRDs, RBAC, the operator Deployment (image `mycedrive/operator
 
 ## Making a StatefulSet Migratable
 
-**1. Image:** add the EA to your application image:
+**1. Image:** make your entrypoint start the EA before the application. The
+binaries arrive in the pod automatically — the DMTCP init container copies
+`go-agent` and `end_container` (plus the DMTCP tools) into the shared
+`/dmtcp/bin` volume, so the entrypoint only needs:
 
-```dockerfile
-COPY --from=mycedrive/go-agent:dev /usr/local/bin/go-agent /usr/local/bin/go-agent
-RUN ln -s /usr/local/bin/go-agent /usr/local/bin/end_container
+```sh
+/dmtcp/bin/go-agent || true                       # register + (on a target) restore
+exec /dmtcp/bin/dmtcp_launch -j ${START_UP}       # fresh start under DMTCP
 ```
+
+See `examples/mosquitto_d/docker-entrypoint.sh` for the complete pattern,
+including the `.restored` marker check. Alternatively embed the binary:
+`COPY --from=mycedrive/go-agent:dev /go-agent /usr/local/bin/go-agent`.
 
 **2. Workload:** patch the StatefulSet with the sidecar, shared volume, env vars, and preStop hook:
 
@@ -105,6 +112,20 @@ Phases: `Pending → Syncing → Checkpointing → Transferring → Restoring �
 curl -X POST http://<operator-service>/migrate \
   -d '{"workload":"my-app","sourceNode":"worker-01","targetNode":"worker-02"}'
 ```
+
+## Try It: Migration Scenarios
+
+`examples/scenarios/` ships three ready-made test scenarios (both mechanisms,
+process-only, volume-only) built around a Mosquitto broker whose state is a
+retained MQTT message, plus a script that deploys, migrates and verifies
+end to end:
+
+```sh
+./examples/run-scenario.sh both        # or: process-only | volume-only
+```
+
+See [examples/scenarios/README.md](examples/scenarios/README.md) for the
+manual walkthrough and troubleshooting.
 
 ## Dashboard
 
