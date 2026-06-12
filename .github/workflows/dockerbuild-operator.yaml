@@ -6,10 +6,6 @@ on:
     paths:
       - 'operator/**'
       - '.github/workflows/dockerbuild-operator.yaml'
-  pull_request:
-    paths:
-      - 'operator/**'
-      - '.github/workflows/dockerbuild-operator.yaml'
   workflow_dispatch:
     inputs:
       image_tag:
@@ -40,8 +36,6 @@ jobs:
         go test ./...
 
   build-and-push:
-    # Only publish from main (or manual dispatch); PRs stop at the test job.
-    if: github.event_name != 'pull_request'
     needs: test
     runs-on: ubuntu-latest
 

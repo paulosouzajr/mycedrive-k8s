@@ -36,6 +36,9 @@ ENV DMTCP_CHECKPOINT_DIR=/dmtcp/checkpoints
 VOLUME ["/share"]
 
 # Default: start the coordinator on port 7779.
+# The coordinator MUST run in the foreground: with --background it forks and
+# the parent (PID 1) exits, so Kubernetes sees the container as dead and
+# restarts it in a CrashLoop. Logs go to stdout for `kubectl logs`.
 EXPOSE 7779
-CMD ["/usr/bin/dmtcp_coordinator", "--port", "7779", "--background", "--coord-logfile", "/dmtcp/checkpoints/coordinator.log"]
+CMD ["/usr/bin/dmtcp_coordinator", "--port", "7779"]
 

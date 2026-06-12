@@ -1,0 +1,71 @@
+name: Smoke Test (kind)
+
+# Installs the chart on a throwaway kind cluster and verifies the operator
+# becomes Ready, the CRDs are served, and a MigratableWorkload is accepted.
+# Catches RBAC/CRD/chart packaging regressions that unit tests cannot.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build operator image
+        run: docker build -t mycedrive/operator:smoke operator/
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: kind
+
+      - name: Load image into kind
+        run: kind load docker-image mycedrive/operator:smoke
+
+      - name: Install chart
+        run: |
+          helm install mycedrive-operator deployment/operator \
+            --namespace mig-ready --create-namespace \
+            --set image.tag=smoke --set image.pullPolicy=Never \
+            --wait --timeout 180s
+
+      - name: CRDs are served
+        run: |
+          kubectl wait --for=condition=Established crd/migratableworkloads.mycedrive.io --timeout=60s
+          kubectl wait --for=condition=Established crd/migrations.mycedrive.io --timeout=60s
+
+      - name: MigratableWorkload is accepted
+        run: |
+          kubectl create deployment smoke-app --image=registry.k8s.io/pause:3.9 -n mig-ready
+          cat <<EOF | kubectl apply -f -
+          apiVersion: mycedrive.io/v1alpha1
+          kind: MigratableWorkload
+          metadata:
+            name: smoke-app
+            namespace: mig-ready
+          spec:
+            workloadRef:
+              kind: Deployment
+              name: smoke-app
+            processMigration: true
+            volumeMigration: true
+          EOF
+          kubectl get mw -n mig-ready smoke-app
+
+      - name: REST API answers /healthz
+        run: |
+          kubectl -n mig-ready port-forward svc/mycedrive-operator 18080:80 &
+          sleep 3
+          curl -fsS http://127.0.0.1:18080/healthz
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n mig-ready describe deploy mycedrive-operator || true
+          kubectl -n mig-ready logs deploy/mycedrive-operator --tail=200 || true

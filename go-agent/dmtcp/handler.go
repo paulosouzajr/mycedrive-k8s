@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -39,6 +41,32 @@ func NewHandler(checkpointDir string) *Handler {
 		CheckpointDir: checkpointDir,
 		State:         StateIdle,
 	}
+}
+
+// NewHandlerFromEnv creates a Handler configured from the standard
+// environment variables DMTCP_COORD_HOST, DMTCP_COORD_PORT and (when
+// checkpointDir is empty) DMTCP_CHECKPOINT_DIR.
+func NewHandlerFromEnv(checkpointDir string) *Handler {
+	if checkpointDir == "" {
+		checkpointDir = os.Getenv("DMTCP_CHECKPOINT_DIR")
+	}
+	h := NewHandler(checkpointDir)
+	if host := os.Getenv("DMTCP_COORD_HOST"); host != "" {
+		h.CoordHost = host
+	}
+	if raw := os.Getenv("DMTCP_COORD_PORT"); raw != "" {
+		if p, err := strconv.Atoi(raw); err == nil && p > 0 && p <= 65535 {
+			h.CoordPort = p
+		}
+	}
+	return h
+}
+
+// AttachRunning marks the handler as managing an application that is already
+// running under DMTCP. The preStop hook runs in a fresh process that did not
+// itself call Launch, so it must attach before requesting a checkpoint.
+func (h *Handler) AttachRunning() {
+	h.State = StateRunning
 }
 
 // coordAddr returns the coordinator address string.
@@ -106,6 +134,48 @@ func (h *Handler) Restart() error {
 
 	h.State = StateRunning
 	return nil
+}
+
+// RestartCommand returns the argv that restores every checkpoint in
+// CheckpointDir via dmtcp_restart against the local coordinator.
+func (h *Handler) RestartCommand() ([]string, error) {
+	files, err := h.ListCheckpoints()
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no checkpoint files found in %s", h.CheckpointDir)
+	}
+	argv := []string{
+		"dmtcp_restart",
+		"--coord-host", h.CoordHost,
+		"--coord-port", fmt.Sprintf("%d", h.CoordPort),
+	}
+	return append(argv, files...), nil
+}
+
+// ExecRestart replaces the current process with dmtcp_restart for all
+// checkpoints in CheckpointDir. On success it never returns: the calling
+// process becomes the restored application, so the container entrypoint that
+// spawned the agent transparently waits on the restored process.
+func (h *Handler) ExecRestart() error {
+	argv, err := h.RestartCommand()
+	if err != nil {
+		h.State = StateError
+		return err
+	}
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		h.State = StateError
+		return fmt.Errorf("dmtcp_restart not found: %w", err)
+	}
+	log.Printf("[dmtcp] Exec restore: %s", strings.Join(argv, " "))
+	h.State = StateRestoring
+	if err := syscall.Exec(path, argv, os.Environ()); err != nil {
+		h.State = StateError
+		return fmt.Errorf("exec dmtcp_restart: %w", err)
+	}
+	return nil // unreachable
 }
 
 // Launch wraps a command with dmtcp_launch so it is managed by the coordinator.

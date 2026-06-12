@@ -9,7 +9,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'deployment/myce-server/mycedrive/**'
       - 'deployment/operator/**'
       - '.github/workflows/helm-release.yaml'
   workflow_dispatch:
@@ -30,7 +29,6 @@ jobs:
       - name: Package charts
         run: |
           mkdir -p .chart-output
-          helm package deployment/myce-server/mycedrive --destination .chart-output
           helm package deployment/operator --destination .chart-output
 
       - name: Checkout gh-pages

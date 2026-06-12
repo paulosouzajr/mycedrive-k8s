@@ -406,4 +406,26 @@ if [ "$haveSslConfig" ] && [ -f "$combinedSsl" ]; then
 	export RABBITMQ_CTL_ERL_ARGS="${RABBITMQ_CTL_ERL_ARGS:-} $sslErlArgs"
 fi
 
+# --- MyceDrive Execution Agent handshake -----------------------------------
+# go-agent registers this container with the Migration Coordinator. On a
+# migration target it blocks while receiving the source pod's checkpoints
+# (overlay volume layers and/or DMTCP process checkpoints, depending on the
+# ENABLE_VOLUME_MIGRATION / ENABLE_PROCESS_MIGRATION flags) and then execs
+# dmtcp_restart in place: in that case the go-agent call below only returns
+# once the RESTORED application exits, and a ".restored" marker is left in
+# the checkpoint directory so we must NOT launch a fresh instance.
+CKPT_DIR="${DMTCP_CHECKPOINT_DIR:-/dmtcp/checkpoints}"
+if [ -x /dmtcp/bin/go-agent ]; then
+	/dmtcp/bin/go-agent "${VOLUME_ROOT_DIR:-$RABBITMQ_DATA_DIR}" "${CHECKPOINT_ROUNDS:-1}" || true
+	if [ -f "$CKPT_DIR/.restored" ]; then
+		echo "MyceDrive: restored application finished; exiting without fresh launch"
+		exit 0
+	fi
+fi
+
+# Fresh launch, wrapped by DMTCP when available so future checkpoints work.
+if [ -x /dmtcp/bin/dmtcp_launch ]; then
+	exec /dmtcp/bin/dmtcp_launch -j "$@"
+fi
+
 exec "$@"

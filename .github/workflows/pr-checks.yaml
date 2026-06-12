@@ -1,0 +1,68 @@
+name: PR Checks
+
+# Single gate for pull requests: builds, vets and tests every Go module
+# (go-agent, operator, tests/functional) and validates the Helm chart.
+# Image publishing stays in the dockerbuild-* workflows (main only).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  go:
+    name: Go build, vet and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: operator/go.mod
+          cache-dependency-path: |
+            operator/go.sum
+            tests/functional/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l go-agent operator tests)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:" && echo "$unformatted" && exit 1
+          fi
+
+      - name: go-agent
+        working-directory: go-agent
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      - name: operator
+        working-directory: operator
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      - name: functional tests (agent ↔ operator wire contract)
+        working-directory: tests/functional
+        run: |
+          go vet ./...
+          go test -v ./...
+
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint and render chart
+        run: |
+          helm lint deployment/operator
+          helm template test deployment/operator > /dev/null

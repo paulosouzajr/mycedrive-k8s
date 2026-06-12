@@ -2,8 +2,8 @@
 
 MyceDrive migrates **stateful pods** between Kubernetes nodes while preserving the application's live state. It combines two independently toggleable mechanisms:
 
-- **Process memory migration (DMTCP)** — checkpoints the container's processes, memory, and open TCP connections, and restores them on the destination node ([ICFEC 2022](https://inria.hal.science/hal-03587358v1)).
-- **Volume migration (OverlayFS)** — snapshots the pod's volume as read-only overlay layers and transfers them *before* the downtime window, so only the last small layer moves while the pod is down ([CloudCom 2020](https://inria.hal.science/hal-02963913v1)).
+- **Process memory migration (DMTCP)** — checkpoints the container's processes, memory, and open TCP connections, and restores them on the destination node.
+- **Volume migration (OverlayFS)** — snapshots the pod's volume as read-only overlay layers and transfers them *before* the downtime window, so only the last small layer moves while the pod is down.
 
 ## Architecture
 
@@ -11,13 +11,35 @@ MyceDrive migrates **stateful pods** between Kubernetes nodes while preserving t
 - **Execution Agent (EA, `go-agent`)** — runs inside every application container. Wraps the entry point with `dmtcp_launch`, executes the preStop checkpoint flow, manages overlay layers, and streams checkpoints to the destination.
 - **DMTCP sidecar** — a lightweight container per pod running `dmtcp_coordinator`, sharing the DMTCP binaries and checkpoint dir over an `emptyDir` volume.
 
+## Requirements & Limitations
+
+Read this before deploying:
+
+- **Kubernetes** ≥ 1.26 with `kubectl` and Helm v3. The DMTCP sidecar and the
+  overlay mounts require **Linux nodes**; volume migration needs OverlayFS
+  support in the node kernel (any modern distribution kernel qualifies).
+- **Process migration (DMTCP)** checkpoints userspace processes. It does not
+  cover GPU state, and applications using esoteric kernel interfaces
+  (io_uring, eBPF maps, inotify watches across restore) may not restore
+  cleanly. Open TCP connections are preserved; UDP state is not.
+- **Volume migration (overlay)** checkpoints the layered volume managed by the
+  Execution Agent. It does not migrate PVCs managed by external CSI drivers —
+  if a pod also mounts a PVC, that data moves (or not) per your storage class,
+  and can diverge from the migrated overlay state.
+- The Migration Coordinator REST API is **unauthenticated, in-cluster only**.
+  Do not expose the operator Service publicly (see [SECURITY.md](SECURITY.md)).
+- Migration moves a pod **between nodes of one cluster**. Cross-cluster
+  migration is out of scope for now.
+
 ## Installing the Operator
 
 ```sh
 helm repo add mycedrive https://paulosouzajr.github.io/mycedrive-k8s
 helm repo update
-helm install mycedrive-operator mycedrive/mycedrive-operator
+helm install mycedrive-operator mycedrive/mycedrive-operator --version 0.1.0
 ```
+
+Pin `--version` to a released chart; omit it only if you want the latest.
 
 Or from the local chart:
 
@@ -107,11 +129,17 @@ Images are published to `docker.io/mycedrive/` automatically by GitHub Actions o
 ## Repository Layout
 
 ```
-operator/      Kubernetes operator (CRDs, reconcilers, REST API, dashboard)
-go-agent/      Execution Agent that runs inside application containers
-dmtcp/         DMTCP sidecar image and raw manifests
-deployment/    Helm chart for the operator
-scripts/       make-migratable.sh — StatefulSet onboarding
-docs/          User documentation
-examples/      Reference application images (Mosquitto, RabbitMQ)
+operator/         Kubernetes operator (CRDs, reconcilers, REST API, dashboard)
+go-agent/         Execution Agent that runs inside application containers
+dmtcp/            DMTCP sidecar image and raw manifests
+deployment/       Helm chart for the operator
+scripts/          make-migratable.sh — StatefulSet onboarding
+docs/             User documentation
+examples/         Reference application images (Mosquitto, RabbitMQ)
+tests/functional/ Agent ↔ operator wire-contract tests
 ```
+
+## Contributing & License
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Licensed
+under [Apache-2.0](LICENSE).

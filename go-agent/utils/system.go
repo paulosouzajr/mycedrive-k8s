@@ -2,16 +2,12 @@ package utils
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,172 +15,95 @@ import (
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
-// Run executes command with the given space-separated args string and returns stdout.
-func Run(command string, args string) []byte {
+// Run executes command with the given space-separated args string and returns
+// its stdout. A non-zero exit status is returned as an error that includes
+// the command's stderr.
+func Run(command string, args string) ([]byte, error) {
 	cmd := exec.Command(command, strings.Fields(args)...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		log.Printf("command %q %q failed: %v", command, args, err)
+		return out, fmt.Errorf("%s %s: %w (stderr: %s)", command, args, err, strings.TrimSpace(stderr.String()))
 	}
-	return out
+	return out, nil
 }
+
+// EnvBool reads a boolean environment variable. Accepted true values:
+// "1", "t", "true", "yes", "y", "on"; false values: "0", "f", "false",
+// "no", "n", "off" (case-insensitive). Unset or unrecognised values return def.
+func EnvBool(name string, def bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	switch v {
+	case "1", "t", "true", "yes", "y", "on":
+		return true
+	case "0", "f", "false", "no", "n", "off":
+		return false
+	default:
+		return def
+	}
+}
+
+// EnvInt reads an integer environment variable, returning def when unset or
+// invalid. Values outside (0, 65535] are rejected for port-like settings;
+// callers needing other ranges should validate separately.
+func EnvInt(name string, def int) int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 || v > 65535 {
+		return def
+	}
+	return v
+}
+
+// EnvOr returns the value of the environment variable name, or def when unset.
+func EnvOr(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
+// ProcessMigrationEnabled reports whether DMTCP process checkpoint/restore is
+// enabled (ENABLE_PROCESS_MIGRATION, default true).
+func ProcessMigrationEnabled() bool {
+	return EnvBool("ENABLE_PROCESS_MIGRATION", true)
+}
+
+// VolumeMigrationEnabled reports whether overlay volume layer checkpointing is
+// enabled (ENABLE_VOLUME_MIGRATION, default true).
+func VolumeMigrationEnabled() bool {
+	return EnvBool("ENABLE_VOLUME_MIGRATION", true)
+}
+
+// --- Migration Coordinator wire types (REST contract) ---
 
 // RemoveRequest is the payload sent to POST /remove.
 type RemoveRequest struct {
 	PodName string `json:"podName"`
 }
 
-// RemoveResponse is the response from POST /remove.
+// RemoveResponse is the response from POST /remove. DestAddress is an
+// additive field: when set it carries the host:port of the migration-target
+// Execution Agent so the source can stream checkpoints directly.
 type RemoveResponse struct {
-	NeedsCheckpoint bool `json:"needsCheckpoint"`
+	NeedsCheckpoint bool   `json:"needsCheckpoint"`
+	DestAddress     string `json:"destAddress,omitempty"`
 }
 
-// CopyNotification is the payload sent to POST /copy.
+// CopyNotification is the payload sent to POST /copy. LayerCount is additive.
 type CopyNotification struct {
 	PodName       string `json:"podName"`
 	CheckpointDir string `json:"checkpointDir"`
+	LayerCount    int    `json:"layerCount,omitempty"`
 }
 
-// EndContainer implements the preStop lifecycle hook. It calls /remove on the
-// Migration Coordinator to determine whether this shutdown is part of a
-// migration. If so it waits for DMTCP to write checkpoint files then calls
-// /copy to signal that the coordinator can authorise the destination EA.
-func EndContainer(coordAddr, podName, checkpointDir string) error {
-	body, err := postJSON(fmt.Sprintf("http://%s/remove", coordAddr), RemoveRequest{PodName: podName})
-	if err != nil {
-		return fmt.Errorf("POST /remove: %w", err)
-	}
-
-	var resp RemoveResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return fmt.Errorf("parse /remove response: %w", err)
-	}
-
-	if !resp.NeedsCheckpoint {
-		log.Println("normal termination, no checkpoint required")
-		return nil
-	}
-
-	log.Println("migration termination, requesting DMTCP checkpoint")
-	Run("dmtcp_command", "--checkpoint")
-
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		matches, _ := filepath.Glob(checkpointDir + "/*.dmtcp")
-		if len(matches) > 0 {
-			log.Printf("checkpoint ready: %v", matches)
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	if _, err = postJSON(fmt.Sprintf("http://%s/copy", coordAddr), CopyNotification{
-		PodName:       podName,
-		CheckpointDir: checkpointDir,
-	}); err != nil {
-		return fmt.Errorf("POST /copy: %w", err)
-	}
-
-	log.Println("checkpoint acknowledged, container stopping")
-	return nil
-}
-
-// ReceiveData listens on TCP :2486 and writes the first incoming gzip-compressed
-// payload to /tmp/dat2. Used by the destination EA to receive checkpoint data.
-func ReceiveData() bool {
-	listener, err := net.Listen("tcp", ":2486")
-	if err != nil {
-		log.Fatal(err)
-	}
-	done := make(chan struct{})
-	log.Println("listening for checkpoint data on", listener.Addr())
-
-	go func() {
-		defer func() { done <- struct{}{} }()
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			go receiveConn(conn, done)
-		}
-	}()
-
-	<-done
-	return true
-}
-
-func receiveConn(c net.Conn, done chan struct{}) {
-	defer func() {
-		c.Close()
-		done <- struct{}{}
-	}()
-
-	f, err := os.Create("/tmp/dat2")
-	if err != nil {
-		log.Println("create /tmp/dat2:", err)
-		return
-	}
-	defer f.Close()
-
-	buf := make([]byte, 1024)
-	for {
-		n, err := c.Read(buf)
-		if n > 0 {
-			dec, derr := decompress(buf[:n])
-			if derr != nil {
-				log.Println("decompress:", derr)
-				return
-			}
-			f.Write(dec)
-		}
-		if err != nil {
-			if err != io.EOF {
-				log.Println(err)
-			}
-			return
-		}
-	}
-}
-
-// SendFile compresses the file at filePath+"/o"+num with gzip and sends it
-// over TCP to podAddr. Used by the source EA to transfer checkpoint data.
-func SendFile(filePath string, podAddr string, num int) {
-	conn, err := net.Dial("tcp", podAddr)
-	if err != nil {
-		log.Fatal("dial:", err)
-	}
-	defer conn.Close()
-
-	file, err := os.Open(filePath + "/o" + strconv.Itoa(num))
-	if err != nil {
-		log.Fatal("open:", err)
-	}
-	defer file.Close()
-
-	pr, pw := io.Pipe()
-	w, err := gzip.NewWriterLevel(pw, 7)
-	if err != nil {
-		log.Fatal("gzip writer:", err)
-	}
-
-	go func() {
-		if _, err := io.Copy(w, file); err != nil {
-			log.Fatal("compress:", err)
-		}
-		w.Close()
-		pw.Close()
-	}()
-
-	n, err := io.Copy(conn, pr)
-	if err != nil {
-		log.Fatal("send:", err)
-	}
-	log.Printf("sent %d bytes to %s", n, podAddr)
-}
-
-func postJSON(url string, payload interface{}) ([]byte, error) {
+// PostJSON marshals payload to JSON, POSTs it to url, and returns the
+// response body.
+func PostJSON(url string, payload interface{}) ([]byte, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
@@ -199,14 +118,3 @@ func postJSON(url string, payload interface{}) ([]byte, error) {
 	}
 	return io.ReadAll(resp.Body)
 }
-
-func decompress(b []byte) ([]byte, error) {
-	r, err := gzip.NewReader(bytes.NewReader(b))
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	return io.ReadAll(r)
-}
-
-// RemoveRequest mirrors the server-side payload for POST /remove.

@@ -1,6 +1,6 @@
 # Making StatefulSets Migratable with MyceDrive
 
-MyceDrive migrates running pods by checkpointing their memory state with DMTCP and transferring that checkpoint to a destination node. Every pod that participates needs two things: an enriched container image and a pod-spec configuration. This document covers both.
+MyceDrive migrates running pods by checkpointing their memory state with DMTCP and transferring that checkpoint to a destination node. Every pod that participates needs two things: an enriched container image and a pod-spec configuration. This document covers both, plus the MigratableWorkload CR that the MyceDrive operator uses to discover and drive migrations.
 
 ---
 
@@ -10,17 +10,22 @@ Each migratable pod runs three cooperating components:
 
 | Component | Where | Role |
 |-----------|-------|------|
-| **Execution Agent (EA)** | Inside the application container | Wraps the app with `dmtcp_launch`, registers with the Migration Coordinator, drives the checkpoint/restore flow |
+| **Execution Agent (EA)** | Inside the application container | Wraps the app with `dmtcp_launch`, registers with the operator, drives the checkpoint/restore flow |
 | **DMTCP sidecar** | Second container in the pod | Runs `dmtcp_coordinator` on port 7779; exports DMTCP binaries via a shared volume |
 | **dmtcp-init initContainer** | Runs once at pod start | Copies binaries from the sidecar image into the shared `emptyDir` so the app container can call them without embedding ~200 MB in its own image |
 
-The Migration Coordinator (`go-server`) is deployed once per cluster and orchestrates the migration sequence.
+The MyceDrive operator is deployed once per cluster and orchestrates the migration sequence.
 
 ---
 
 ## Prerequisites
 
-- MyceDrive Migration Coordinator deployed and reachable (see [deployment README](../README.md#deploying-to-a-cluster)).
+- MyceDrive operator deployed and reachable:
+  ```bash
+  helm install mycedrive-operator deployment/operator \
+    --namespace mig-ready --create-namespace
+  ```
+  The operator exposes a Service named `mycedrive` in the same namespace on port 80. The EA connects to it via `mycedrive.<namespace>.svc.cluster.local`.
 - `kubectl` configured against the target cluster.
 - Docker (to rebuild your application image).
 - The target StatefulSet already exists in the cluster.
@@ -39,9 +44,9 @@ COPY --from=docker.io/mycedrive/go-agent:dev /build/go-agent /usr/local/bin/go-a
 RUN ln -s /usr/local/bin/go-agent /usr/local/bin/end_container
 ```
 
-The `go-agent` binary path inside `mycedrive/go-agent:dev` is `/build/go-agent` (produced by `make build-agent`). If you build the image yourself adjust the path accordingly.
+The `go-agent` binary path inside `mycedrive/go-agent:dev` is `/build/go-agent` (produced by `make build-agent`). Adjust the path if you build the image yourself.
 
-No changes to your `CMD` or `ENTRYPOINT` are required. The EA starts as the pod's main process (invoked via `START_UP` env var) — it calls `dmtcp_launch` internally to wrap whatever command `START_UP` points to.
+No changes to your `CMD` or `ENTRYPOINT` are required. The EA is invoked at container start via the `START_UP` env var — it calls `dmtcp_launch` internally to wrap that command.
 
 Rebuild and push your image before running the script.
 
@@ -49,18 +54,22 @@ Rebuild and push your image before running the script.
 
 ## Step 2 — Run make-migratable.sh
 
-The script patches the StatefulSet in-place. It is idempotent: running it twice produces the same result.
+The script patches the StatefulSet in-place and creates the MigratableWorkload CR. It is idempotent: running it twice produces the same result.
 
 ```bash
 ./scripts/make-migratable.sh \
   -n <namespace> \
   -s <statefulset-name> \
   -u "<application startup command>" \
-  [-c <container-name>]          # default: first container
-  [-m <migration-coordinator-host>]  # default: mycedrive.mig-ready.svc.cluster.local
-  [-i <dmtcp-image>]             # default: mycedrive/dmtcp:dev
-  [-d <checkpoint-dir>]          # default: /dmtcp/checkpoints
-  [--dry-run]                    # print YAML only; do not apply
+  [-c <container-name>]              # default: first container
+  [-m <operator-service-host>]       # default: mycedrive.mig-ready.svc.cluster.local
+  [-i <dmtcp-image>]                 # default: mycedrive/dmtcp:dev
+  [-d <checkpoint-dir>]              # default: /dmtcp/checkpoints
+  [--process-migration true|false]   # default: true
+  [--volume-migration true|false]    # default: true
+  [--pre-sync-rounds N]              # default: 1 (N >= 0)
+  [--no-cr]                          # skip MigratableWorkload CR creation
+  [--dry-run]                        # print all YAML; do not apply anything
 ```
 
 ### Example — mosquitto StatefulSet
@@ -73,13 +82,25 @@ The script patches the StatefulSet in-place. It is idempotent: running it twice 
   -u "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf"
 ```
 
-### Dry-run first
-
-Always preview the patch before applying:
+### Example — disable volume migration, increase pre-sync rounds
 
 ```bash
 ./scripts/make-migratable.sh \
-  -n mig-ready -s mosquitto \
+  -n mig-ready \
+  -s mosquitto \
+  -c mosquitto \
+  -u "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf" \
+  --volume-migration false \
+  --pre-sync-rounds 3
+```
+
+### Dry-run first
+
+Always preview the patches before applying:
+
+```bash
+./scripts/make-migratable.sh \
+  -n mig-ready -s mosquitto -c mosquitto \
   -u "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf" \
   --dry-run
 ```
@@ -92,14 +113,72 @@ Always preview the patch before applying:
 | `dmtcp-init` initContainer | Copies DMTCP binaries to `/dmtcp` from the sidecar image |
 | `dmtcp` sidecar container | Runs `dmtcp_coordinator` on port 7779; mounts the shared volume at `/share` |
 | Env vars on the app container | `MIGR_COOR`, `POD_NAME`, `POD_IP`, `DMTCP_COORD_HOST`, `DMTCP_CHECKPOINT_DIR`, `START_UP` |
+| Toggle env vars (when non-default) | `ENABLE_PROCESS_MIGRATION=false` and/or `ENABLE_VOLUME_MIGRATION=false` |
 | `volumeMount` on the app container | `/dmtcp` — makes DMTCP binaries and checkpoint files accessible |
-| `preStop` lifecycle hook | Calls `/dmtcp/bin/end_container <mc-host> $(POD_NAME) <ckpt-dir>` |
-| Pod template label | `mig-ready: "true"` — marks the pod as migration-eligible |
+| `preStop` lifecycle hook | Calls `/dmtcp/bin/end_container <operator-host> $(POD_NAME) <ckpt-dir>` |
+| Pod template label | `mig-ready: "true"` — matches the operator's default placement label |
 | ClusterRoleBinding | Binds the pod's ServiceAccount to `mycedrive-coordinator-role` |
+| MigratableWorkload CR | Tells the operator this StatefulSet is migration-eligible (see below) |
 
 ---
 
-## Step 3 — Verify the pod is wrapped
+## Step 3 — MigratableWorkload CR
+
+The script creates a `MigratableWorkload` CR (group `mycedrive.io/v1alpha1`, shortname `mw`) in the same namespace as the workload. The operator uses this CR to discover migratable workloads and read per-workload migration parameters.
+
+The operator's legacy `/migrate` endpoint will auto-create a missing CR if you trigger a migration without running the script first, so the CR is **recommended but not strictly required**. Use `--no-cr` if you manage CRs separately.
+
+A minimal CR (all-defaults) looks like:
+
+```yaml
+apiVersion: mycedrive.io/v1alpha1
+kind: MigratableWorkload
+metadata:
+  name: mosquitto
+  namespace: mig-ready
+spec:
+  workloadRef:
+    kind: StatefulSet
+    name: mosquitto
+  placementLabel:
+    key: mig-ready
+    value: "true"
+```
+
+Non-default flags add fields. For example, `--volume-migration false --pre-sync-rounds 3` produces:
+
+```yaml
+spec:
+  workloadRef:
+    kind: StatefulSet
+    name: mosquitto
+  placementLabel:
+    key: mig-ready
+    value: "true"
+  volumeMigration: false
+  preSyncRounds: 3
+```
+
+Fields at their defaults are omitted to keep the CR minimal.
+
+### CR spec reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `workloadRef.kind` | `StatefulSet\|Deployment` | (required) | Controller type |
+| `workloadRef.name` | string | (required) | Controller name |
+| `placementLabel.key` | string | `mig-ready` | Node/pod selector key the operator uses |
+| `placementLabel.value` | string | `"true"` | Node/pod selector value |
+| `checkpointDir` | string | `/dmtcp/checkpoints` | Path inside the pod |
+| `transferPort` | int | `2486` | TCP port for checkpoint file transfer |
+| `layerCount` | int | `1` | Number of overlayfs layers to checkpoint |
+| `processMigration` | bool | `true` | Enable DMTCP process checkpointing |
+| `volumeMigration` | bool | `true` | Enable overlayfs volume checkpointing |
+| `preSyncRounds` | int ≥ 0 | `1` | Pre-migration dirty-page sync iterations |
+
+---
+
+## Step 4 — Verify the pod is wrapped
 
 After the rollout completes:
 
@@ -107,29 +186,30 @@ After the rollout completes:
 # Wait for the rollout
 kubectl rollout status sts/<statefulset-name> -n <namespace>
 
-# Confirm the DMTCP binaries are present in the app container
+# Confirm DMTCP binaries are present in the app container
 kubectl exec -it <statefulset-name>-0 -n <namespace> -c <container-name> \
   -- ls /dmtcp/bin/
+# Expected: dmtcp_launch  dmtcp_coordinator  dmtcp_command  dmtcp_restart  end_container
 
-# Expected output includes: dmtcp_launch  dmtcp_coordinator  dmtcp_command  dmtcp_restart  end_container
-
-# Confirm the EA registered with the Migration Coordinator
+# Confirm the EA registered with the operator
 kubectl logs <statefulset-name>-0 -n <namespace> -c <container-name> \
   | grep -i "register"
-
 # Expected: "Registering container with MC at ..." and "Register response from MC: ..."
+
+# Check the MigratableWorkload CR
+kubectl get mw <statefulset-name> -n <namespace>
 ```
 
 ---
 
 ## Triggering a migration
 
-Once the pod is registered, use the Migration Coordinator API:
+Once the pod is registered, use the operator API (same Service, port 80):
 
 ```bash
-MC=$(kubectl get svc mycedrive -n mig-ready -o jsonpath='{.spec.clusterIP}')
+OP=$(kubectl get svc mycedrive -n mig-ready -o jsonpath='{.spec.clusterIP}')
 
-curl -s -X POST "http://${MC}/migrate" \
+curl -s -X POST "http://${OP}/migrate" \
   -H "Content-Type: application/json" \
   -d '{
     "deployment": "<statefulset-name>",
@@ -137,8 +217,6 @@ curl -s -X POST "http://${MC}/migrate" \
     "destNode":   "<destination-node>"
   }'
 ```
-
-Note: the `/migrate` endpoint currently takes a `deployment` field; StatefulSets are supported as long as the pod replica count and node selectors allow the controller to schedule on the destination node.
 
 ---
 
@@ -153,25 +231,23 @@ StatefulSets commonly use `volumeClaimTemplates` to provision per-pod PVCs. Myce
 
 Operators must ensure one of the following before triggering migration:
 
-1. The PVC is backed by a distributed or replicated storage class (e.g. Longhorn, Ceph, NFS) accessible from both nodes, **and** the PVC is `ReadWriteMany` or the source pod is stopped before the destination mounts it.
-2. The application's persistent data is fully described by in-memory state (i.e. the PVC content can be reconstructed from the DMTCP checkpoint alone — unusual but possible for stateless-ish apps).
+1. The PVC is backed by a distributed or replicated storage class (e.g. Longhorn, Ceph, NFS) accessible from both nodes, and the PVC is `ReadWriteMany` or the source pod is stopped before the destination mounts it.
+2. The application's persistent data is fully described by in-memory state (unusual but possible for stateless-ish apps).
 3. The StatefulSet uses `ReadWriteOnce` PVCs and the migration procedure includes a manual data-sync step before restarting the destination pod.
 
-The overlayfs layer stack managed by the EA (`go-agent/overlay/`) checkpoints the container's overlay layers, which covers the container's writable layer but not external PVC mounts.
+The overlayfs layer stack (`go-agent/overlay/`) checkpoints the container's writable overlay layer — it does not cover external PVC mounts.
 
-### StatefulSet vs Deployment
+### StatefulSet controller semantics
 
-The `/migrate` endpoint is designed around `Deployments` (it scales up/down replica counts). For StatefulSets the sequence is different:
+The operator's `/migrate` endpoint was originally built around Deployments (scale-up/scale-down). For StatefulSets:
 
-- StatefulSets maintain stable pod identities (`<name>-0`, `<name>-1`); scaling up creates a pod with a new ordinal, not a replacement at the same identity.
+- Scaling up creates a pod with a new ordinal, not a replacement at the same stable identity.
 - The `preStop` hook and checkpoint flow work correctly regardless of controller type.
-- You may need to manually delete the source pod after the destination pod has registered and received the checkpoint, rather than relying on the MC's scale-up/scale-down sequence.
+- You may need to manually delete the source pod after the destination pod has registered and received the checkpoint, rather than relying on the operator's automated scale-down sequence.
 
-Proper StatefulSet support (sticky identity migration) is not yet implemented in `go-server/api/manager.go`.
+Full StatefulSet support (sticky identity migration) is tracked as an open item in the operator.
 
 ### DMTCP process compatibility
-
-DMTCP does not checkpoint all process types reliably:
 
 - Multi-threaded processes generally work but are more complex.
 - Processes using `fork` or `exec` after checkpoint may not restore cleanly.
@@ -180,11 +256,11 @@ DMTCP does not checkpoint all process types reliably:
 
 ### Network connection preservation
 
-DMTCP preserves TCP connections that were established **after** `dmtcp_launch` wrapped the process. Connections that exist before the first `dmtcp_launch` call (e.g. established during the Kubernetes readiness probe window) are not preserved. Use a Kubernetes Service with a stable ClusterIP in front of the StatefulSet so clients reconnect transparently.
+DMTCP preserves TCP connections established **after** `dmtcp_launch` wrapped the process. Use a Kubernetes Service with a stable ClusterIP in front of the StatefulSet so clients reconnect transparently after migration.
 
 ### Image build requirement
 
-The `make-migratable.sh` script patches the **pod spec** but cannot modify your container image. The `go-agent` binary and `end_container` symlink must be present in the application image before the script is run. If the image is missing these binaries the pod will start but the preStop hook will fail silently and migration will not function.
+The script patches the pod spec but cannot modify your container image. The `go-agent` binary and `end_container` symlink must be present in the image before the script is run. If they are missing the pod starts but the preStop hook fails silently and migration does not function.
 
 ---
 
@@ -192,10 +268,12 @@ The `make-migratable.sh` script patches the **pod spec** but cannot modify your 
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MIGR_COOR` | Yes | Hostname (no scheme) of the Migration Coordinator service |
-| `POD_NAME` | Yes | Injected via downward API; used as the pod identifier with the MC |
-| `POD_IP` | Yes | Injected via downward API; used as the transfer endpoint address |
+| `MIGR_COOR` | Yes | Hostname (no scheme) of the operator service |
+| `POD_NAME` | Yes | Injected via downward API; used as the pod identifier |
+| `POD_IP` | Yes | Injected via downward API; used as the checkpoint transfer endpoint |
 | `START_UP` | Yes | Full startup command to run under `dmtcp_launch` |
-| `DMTCP_COORD_HOST` | Yes | Hostname of the DMTCP coordinator (always `127.0.0.1` for sidecar mode) |
+| `DMTCP_COORD_HOST` | Yes | Hostname of the DMTCP coordinator (`127.0.0.1` in sidecar mode) |
 | `DMTCP_CHECKPOINT_DIR` | Yes | Directory where DMTCP writes checkpoint files |
 | `CONTAINER_PORT` | No | Override the EA's file-transfer TCP port (default: 2486) |
+| `ENABLE_PROCESS_MIGRATION` | No | Set to `false` to disable DMTCP process checkpointing (default: `true`) |
+| `ENABLE_VOLUME_MIGRATION` | No | Set to `false` to disable overlayfs volume checkpointing (default: `true`) |

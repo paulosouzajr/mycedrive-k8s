@@ -28,6 +28,7 @@ spec:
         ports:
         - containerPort: 9001
         - containerPort: 1883
+        - containerPort: 2486     # checkpoint transfer channel
         env:
         - name: MIGR_COOR         # hostname to reach the MC REST API
           value: mycedrive.mig-ready.svc.cluster.local
@@ -43,20 +44,30 @@ spec:
           value: "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf"
         - name: DMTCP_COORD_HOST
           value: "127.0.0.1"
+        - name: DMTCP_COORD_PORT
+          value: "7779"
         - name: DMTCP_CHECKPOINT_DIR
           value: /dmtcp/checkpoints
+        - name: CONTAINER_PORT    # TCP port of the checkpoint transfer channel
+          value: "2486"
+        # Migration mechanisms are independently toggleable (default: true).
+        - name: ENABLE_PROCESS_MIGRATION  # DMTCP memory/socket checkpoint+restore
+          value: "true"
+        - name: ENABLE_VOLUME_MIGRATION   # overlay volume layers; this pod has
+          value: "false"                  # no data volume, so keep it disabled
         volumeMounts:             # Shared volume with DMTCP binaries
         - name: dmtcp-shared
           mountPath: /dmtcp
         lifecycle:
           preStop:
             exec:
-              # end_container calls /remove and /copy on the MC
+              # end_container checkpoints and streams state to the destination
+              # EA, blocking pod termination until the transfer completes.
+              # No arguments: Kubernetes does NOT expand $(VAR) inside
+              # lifecycle exec commands, so the binary reads MIGR_COOR,
+              # POD_NAME and DMTCP_CHECKPOINT_DIR from the environment.
               command:
                 - /dmtcp/bin/end_container
-                - mycedrive.mig-ready.svc.cluster.local
-                - $(POD_NAME)
-                - /dmtcp/checkpoints
       - name: dmtcp
         image: mycedrive/dmtcp:dev
         ports:

@@ -8,7 +8,7 @@
 #   • Each worker node runs one dmtcp-node-agent pod (this DaemonSet).
 #   • Application pods mount the shared /dmtcp-share volume to access the
 #     DMTCP binaries/libraries without embedding them in their own images.
-#   • The Migration Coordinator (go-server) orchestrates checkpoint / restore
+#   • The Migration Coordinator (operator) orchestrates checkpoint / restore
 #     by calling the REST API exposed on each node.
 ###############################################################################
 apiVersion: apps/v1
@@ -144,6 +144,23 @@ spec:
               value: "7779"
             - name: DMTCP_CHECKPOINT_DIR
               value: /dmtcp/checkpoints
+            - name: CONTAINER_PORT          # checkpoint transfer channel port
+              value: "2486"
+            - name: VOLUME_ROOT_DIR         # overlay mount point, must match args[0]
+              value: /mnt/rootfs
+            - name: DATA_DIR                # overlay layer storage
+              value: /data
+            - name: CHECKPOINT_ROUNDS       # volume pre-transfer rounds before downtime
+              value: "1"
+            # Migration mechanisms are independently toggleable (default: true).
+            - name: ENABLE_PROCESS_MIGRATION
+              value: "true"
+            - name: ENABLE_VOLUME_MIGRATION
+              value: "true"
+          ports:
+            - name: ckpt-transfer
+              containerPort: 2486
+              protocol: TCP
           volumeMounts:
             - name: dmtcp-share
               mountPath: /dmtcp
@@ -159,8 +176,13 @@ spec:
           lifecycle:
             preStop:
               exec:
-                # end_container calls utils.EndContainer which POSTs /remove and
-                # /copy to the MC before the container is terminated.
+                # end_container POSTs /remove to the MC; when the pod is a
+                # migration source it checkpoints (DMTCP and/or overlay
+                # volume layers per the ENABLE_* flags), streams everything
+                # to the destination EA, then POSTs /copy. It blocks until
+                # the transfer completes. coordAddr/podName/checkpointDir
+                # are taken from MIGR_COOR, POD_NAME and
+                # DMTCP_CHECKPOINT_DIR in the container environment.
                 command:
                   - /go-agent
                   - end_container

@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MyceDrive Operator Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+    h1 { font-size: 1.5rem; font-weight: 700; color: #38bdf8; margin-bottom: 0.25rem; }
+    .subtitle { font-size: 0.875rem; color: #64748b; margin-bottom: 1.5rem; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+    @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+    }
+    .card h2 {
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #94a3b8;
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .card h2 .dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #22d3ee;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    th {
+      text-align: left;
+      padding: 0.4rem 0.6rem;
+      color: #64748b;
+      font-weight: 500;
+      border-bottom: 1px solid #334155;
+    }
+    td { padding: 0.5rem 0.6rem; border-bottom: 1px solid #1e293b; }
+    tr:last-child td { border-bottom: none; }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-ok { background: #064e3b; color: #6ee7b7; }
+    .badge-mig { background: #7c2d12; color: #fdba74; }
+    .badge-pending { background: #1e3a5f; color: #7dd3fc; }
+    .badge-active { background: #4a3208; color: #fcd34d; }
+    .badge-done { background: #064e3b; color: #6ee7b7; }
+    .badge-failed { background: #5f1e1e; color: #fca5a5; }
+    .empty { color: #475569; font-size: 0.8rem; padding: 0.5rem 0; }
+    .wide-card { grid-column: 1 / -1; }
+    .form-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    label { display: block; font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.3rem; }
+    input, select {
+      width: 100%;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 0.4rem;
+      color: #e2e8f0;
+      padding: 0.45rem 0.6rem;
+      font-size: 0.875rem;
+    }
+    input:focus, select:focus { outline: 2px solid #38bdf8; border-color: transparent; }
+    button {
+      background: #0284c7;
+      color: #fff;
+      border: none;
+      border-radius: 0.4rem;
+      padding: 0.5rem 1.25rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #0369a1; }
+    button:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+    .status-bar {
+      margin-top: 0.75rem;
+      font-size: 0.8rem;
+      min-height: 1.2em;
+      color: #94a3b8;
+    }
+    .status-bar.ok { color: #6ee7b7; }
+    .status-bar.err { color: #fca5a5; }
+    .refresh-hint { font-size: 0.75rem; color: #475569; margin-top: 1.5rem; text-align: right; }
+  </style>
+</head>
+<body>
+  <h1>MyceDrive Operator Dashboard</h1>
+  <p class="subtitle">Stateful pod migration &mdash; DMTCP process checkpointing + overlayfs volume layers &mdash; auto-refreshes every 5 s</p>
+
+  <div class="grid">
+    <!-- Registered Pods -->
+    <div class="card">
+      <h2><span class="dot"></span>Registered Pods</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Pod Name</th>
+            <th>Address</th>
+            <th>Node</th>
+            <th>State</th>
+          </tr>
+        </thead>
+        <tbody id="pods-body">
+          <tr><td colspan="4" class="empty">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Pods currently migrating -->
+    <div class="card">
+      <h2><span class="dot"></span>Pods in Migration</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Pod Name</th>
+            <th>Address</th>
+            <th>Node</th>
+            <th>State</th>
+          </tr>
+        </thead>
+        <tbody id="mig-body">
+          <tr><td colspan="4" class="empty">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Migration CRs -->
+    <div class="card wide-card">
+      <h2><span class="dot"></span>Migrations</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Workload</th>
+            <th>Source &rarr; Target</th>
+            <th>Pod</th>
+            <th>Mechanisms</th>
+            <th>Phase</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody id="migrations-body">
+          <tr><td colspan="7" class="empty">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Trigger migration form -->
+    <div class="card wide-card">
+      <h2>Trigger Migration</h2>
+      <div class="form-row">
+        <div>
+          <label for="workload">Workload (StatefulSet / Deployment)</label>
+          <input id="workload" type="text" placeholder="my-app" list="workload-names">
+          <datalist id="workload-names"></datalist>
+        </div>
+        <div>
+          <label for="pod-name">Pod (optional, defaults to pod on source node)</label>
+          <input id="pod-name" type="text" placeholder="my-app-0" list="pod-names">
+          <datalist id="pod-names"></datalist>
+        </div>
+        <div>
+          <label for="origin-node">Source Node</label>
+          <input id="origin-node" type="text" placeholder="node-1">
+        </div>
+        <div>
+          <label for="dest-node">Destination Node</label>
+          <input id="dest-node" type="text" placeholder="node-2">
+        </div>
+      </div>
+      <button id="migrate-btn" onclick="triggerMigration()">Migrate Pod</button>
+      <div class="status-bar" id="migrate-status"></div>
+    </div>
+  </div>
+
+  <p class="refresh-hint" id="last-refresh">Last refresh: never</p>
+
+  <script>
+    const BASE = '';  // same origin
+
+    async function fetchJSON(path) {
+      const res = await fetch(BASE + path);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }
+
+    function renderPodRow(p) {
+      const badge = p.migrating
+        ? '<span class="badge badge-mig">migrating</span>'
+        : '<span class="badge badge-ok">registered</span>';
+      return `<tr>
+        <td>${esc(p.name)}</td>
+        <td>${esc(p.address || '')}</td>
+        <td>${esc(p.node || '')}</td>
+        <td>${badge}</td>
+      </tr>`;
+    }
+
+    function phaseBadge(phase) {
+      const cls = {
+        Pending: 'badge-pending',
+        Syncing: 'badge-active',
+        Checkpointing: 'badge-active',
+        Transferring: 'badge-active',
+        Restoring: 'badge-active',
+        Completed: 'badge-done',
+        Failed: 'badge-failed',
+      }[phase] || 'badge-pending';
+      return `<span class="badge ${cls}">${esc(phase)}</span>`;
+    }
+
+    function mechBadges(m) {
+      const parts = [];
+      if (m.processMigration) parts.push('process');
+      if (m.volumeMigration) parts.push('volume' + (m.syncRounds ? ` (${m.syncRound || 0}/${m.syncRounds})` : ''));
+      return parts.length ? esc(parts.join(' + ')) : '<span class="empty">none</span>';
+    }
+
+    function renderMigrationRow(m) {
+      return `<tr>
+        <td>${esc(m.name)}</td>
+        <td>${esc(m.workload)}</td>
+        <td>${esc(m.sourceNode)} &rarr; ${esc(m.targetNode)}</td>
+        <td>${esc(m.sourcePod || m.podName || '')}</td>
+        <td>${mechBadges(m)}</td>
+        <td>${phaseBadge(m.phase)}</td>
+        <td>${esc(m.message || '')}</td>
+      </tr>`;
+    }
+
+    function emptyRow(cols, msg) {
+      return `<tr><td colspan="${cols}" class="empty">${msg}</td></tr>`;
+    }
+
+    async function refresh() {
+      try {
+        const data = await fetchJSON('/api/v1/pods');
+        const pods = data.pods || [];
+        const allPods = pods.filter(p => !p.migrating);
+        const migPods = pods.filter(p => p.migrating);
+
+        document.getElementById('pods-body').innerHTML =
+          allPods.length ? allPods.map(renderPodRow).join('') : emptyRow(4, 'No registered pods');
+        document.getElementById('mig-body').innerHTML =
+          migPods.length ? migPods.map(renderPodRow).join('') : emptyRow(4, 'No pods in migration');
+
+        document.getElementById('pod-names').innerHTML =
+          pods.map(p => `<option value="${esc(p.name)}">`).join('');
+        const workloads = [...new Set(pods.map(p => p.workload).filter(Boolean))];
+        document.getElementById('workload-names').innerHTML =
+          workloads.map(wname => `<option value="${esc(wname)}">`).join('');
+      } catch (e) {
+        const msg = emptyRow(4, 'Error: ' + e.message);
+        document.getElementById('pods-body').innerHTML = msg;
+        document.getElementById('mig-body').innerHTML = msg;
+      }
+
+      try {
+        const data = await fetchJSON('/api/v1/migrations');
+        const migrations = (data.migrations || []).slice().reverse();
+        document.getElementById('migrations-body').innerHTML =
+          migrations.length ? migrations.map(renderMigrationRow).join('') : emptyRow(7, 'No migrations');
+      } catch (e) {
+        document.getElementById('migrations-body').innerHTML = emptyRow(7, 'Error: ' + e.message);
+      }
+
+      document.getElementById('last-refresh').textContent =
+        'Last refresh: ' + new Date().toLocaleTimeString();
+    }
+
+    async function triggerMigration() {
+      const workload = document.getElementById('workload').value.trim();
+      const podName = document.getElementById('pod-name').value.trim();
+      const sourceNode = document.getElementById('origin-node').value.trim();
+      const targetNode = document.getElementById('dest-node').value.trim();
+
+      const status = document.getElementById('migrate-status');
+      const btn = document.getElementById('migrate-btn');
+
+      if (!workload || !sourceNode || !targetNode) {
+        setStatus(status, 'Workload, source node and destination node are required.', 'err');
+        return;
+      }
+
+      btn.disabled = true;
+      setStatus(status, 'Sending request...', '');
+
+      const body = { workload, sourceNode, targetNode };
+      if (podName) body.podName = podName;
+
+      try {
+        const res = await fetch(BASE + '/api/v1/migrations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setStatus(status, 'Error: ' + (data.error || res.status), 'err');
+        } else {
+          setStatus(status, 'Migration ' + (data.migration || '') + ' started for ' + workload, 'ok');
+          refresh();
+        }
+      } catch (e) {
+        setStatus(status, 'Network error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function setStatus(el, msg, cls) {
+      el.textContent = msg;
+      el.className = 'status-bar ' + cls;
+    }
+
+    function esc(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // Initial load + poll every 5 seconds
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
