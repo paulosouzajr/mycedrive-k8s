@@ -3,7 +3,7 @@ entries:
   mycedrive:
   - apiVersion: v2
     appVersion: dev
-    created: "2026-06-12T08:54:37.155985444Z"
+    created: "2026-06-12T11:35:46.523318228Z"
     description: 'MyceDrive Migration Coordinator – deploys the REST API that orchestrates
       stateful Kubernetes pod migration using DMTCP checkpointing. '
     digest: 1553998da5fb4457fc196d8af0b798c5e7174eca95388271470be699ec29dc9c
@@ -25,13 +25,13 @@ entries:
     version: 0.1.0
   mycedrive-operator:
   - apiVersion: v2
-    appVersion: 0.1.0
-    created: "2026-06-12T08:54:37.156455895Z"
+    appVersion: dev
+    created: "2026-06-12T11:35:46.523792797Z"
     description: 'MyceDrive Operator – Kubernetes operator orchestrating stateful
       pod migration (DMTCP process checkpointing + overlayfs volume layers) through
       MigratableWorkload and Migration CRDs. Embeds the Migration Coordinator REST
       API consumed by the Execution Agents. '
-    digest: ede715a3a6557d7e6420facc1707aabefe8fb76a6873d62ade5dbb7f1754e693
+    digest: f4d5d52803fd769aeab151d29645511ac9c4ac0bf5bb43971dcb5a26d5b595fe
     home: https://github.com/paulosouzajr/mycedrive-k8s
     keywords:
     - migration
@@ -49,4 +49,4 @@ entries:
     urls:
     - https://paulosouzajr.github.io/mycedrive-k8s/mycedrive-operator-0.1.0.tgz
     version: 0.1.0
-generated: "2026-06-12T08:54:37.155211926Z"
+generated: "2026-06-12T11:35:46.522756027Z"
