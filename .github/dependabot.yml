@@ -15,14 +15,6 @@ updates:
     schedule:
       interval: weekly
 
-  - package-ecosystem: gomod
-    directory: /tests/functional
-    schedule:
-      interval: weekly
-    ignore:
-      - dependency-name: "k8s.io/*"
-      - dependency-name: "sigs.k8s.io/*"
-
   - package-ecosystem: github-actions
     directory: /
     schedule:
