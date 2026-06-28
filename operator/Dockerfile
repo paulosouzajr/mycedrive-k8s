@@ -1,7 +1,7 @@
 # Build the MyceDrive operator binary.
 # Build context must be the operator/ directory:
 #   docker build -t mycedrive/operator:dev operator/
-FROM golang:1.23-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
