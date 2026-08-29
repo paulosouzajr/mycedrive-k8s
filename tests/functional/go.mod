@@ -7,7 +7,7 @@ module github.com/paulosouzajr/mycedrive-k8s/tests/functional
 go 1.23.4
 
 require (
-	github.com/go-logr/logr v1.4.2
+	github.com/go-logr/logr v1.4.3
 	github.com/paulosouzajr/mycedrive-k8s/operator v0.0.0
 	go-agent v0.0.0
 	k8s.io/api v0.31.4
