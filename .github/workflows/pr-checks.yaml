@@ -1,7 +1,7 @@
 name: PR Checks
 
-# Single gate for pull requests: builds, vets and tests every Go module
-# (go-agent, operator, tests/functional) and validates the Helm chart.
+# Single gate for pull requests: builds, vets and tests every Go module,
+# validates shell scripts and the Helm chart, and builds every shipped image.
 # Image publishing stays in the dockerbuild-* workflows (main only).
 
 on:
@@ -53,16 +53,56 @@ jobs:
           go test -v ./...
 
   helm:
-    name: Helm chart
+    name: Helm chart render and package
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
-      - name: Lint and render chart
+      - name: Lint, render, and package chart
         run: |
           helm lint deployment/operator
           helm template test deployment/operator > /dev/null
+          helm package deployment/operator --destination /tmp/mycedrive-chart
+          test -f /tmp/mycedrive-chart/mycedrive-operator-*.tgz
+
+  shell:
+    name: Shell script syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse all shell scripts
+        shell: bash
+        run: |
+          while IFS= read -r -d '' script; do
+            echo "Checking $script"
+            bash -n "$script"
+          done < <(find . -type f -name '*.sh' -not -path './.git/*' -print0)
+
+  images:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build execution agent
+        run: docker build --tag mycedrive/go-agent:ci go-agent
+
+      - name: Build DMTCP image with checked agent
+        run: |
+          docker build \
+            --build-arg AGENT_IMAGE=mycedrive/go-agent:ci \
+            --tag mycedrive/dmtcp:ci \
+            dmtcp
+
+      - name: Build operator image
+        run: docker build --tag mycedrive/operator:ci operator
+
+      - name: Build Mosquitto scenario image
+        run: docker build --tag mycedrive/mosquitto:ci examples/mosquitto_d
