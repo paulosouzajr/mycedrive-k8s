@@ -3,7 +3,7 @@
 MyceDrive migrates **stateful pods** between Kubernetes nodes while preserving the application's live state. It combines two independently toggleable mechanisms:
 
 - **Process memory migration (DMTCP)** — checkpoints the container's processes, memory, and open TCP connections, and restores them on the destination node.
-- **Volume migration (OverlayFS)** — snapshots the pod's volume as read-only overlay layers and transfers them *before* the downtime window, so only the last small layer moves while the pod is down.
+- **Volume migration (OverlayFS)** — snapshots the pod's writable overlay layers and transfers them during the controlled termination window.
 
 ## Architecture
 
@@ -37,7 +37,7 @@ Read this before deploying:
 helm repo add mycedrive https://paulosouzajr.github.io/mycedrive-k8s
 helm repo update
 helm install mycedrive-operator mycedrive/mycedrive-operator \
-  --namespace mig-ready --create-namespace --version 0.1.1
+  --namespace mig-ready --create-namespace --version 0.2.1
 ```
 
 Pin `--version` to a released chart; omit it only if you want the latest.
@@ -45,7 +45,7 @@ Installing into `mig-ready` matches the defaults used by the example
 scenarios and `make-migratable.sh` (`MIGR_COOR=mycedrive.mig-ready.svc.cluster.local`);
 if you pick another namespace, set `MIGR_COOR` accordingly in your workloads.
 
-Or from the local chart:
+Or install the local chart:
 
 ```sh
 helm install mycedrive-operator deployment/operator
@@ -90,7 +90,6 @@ spec:
     name: my-app
   processMigration: true # DMTCP memory/socket checkpoint
   volumeMigration: true  # OverlayFS volume layer checkpointing
-  preSyncRounds: 1       # overlay rounds transferred before downtime
 ```
 
 `processMigration` and `volumeMigration` can be enabled independently. The same toggles exist on the agent as env vars (`ENABLE_PROCESS_MIGRATION`, `ENABLE_VOLUME_MIGRATION`, both default `true`).
@@ -110,7 +109,7 @@ spec:
   targetNode: worker-02
 ```
 
-Phases: `Pending → Syncing → Checkpointing → Transferring → Restoring → Completed` (or `Failed`). The legacy REST trigger also works and auto-creates the CRs:
+Phases: `Pending → Checkpointing → Transferring → Restoring → Completed` (or `Failed`). The legacy REST trigger also works and auto-creates the CRs:
 
 ```sh
 curl -X POST http://<operator-service>/migrate \

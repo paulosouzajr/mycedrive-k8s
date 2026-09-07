@@ -25,9 +25,9 @@ survives from tells you which mechanism did the work.
 1. A cluster with **at least 2 schedulable Linux nodes** (for a local trial:
    `minikube start --nodes 2` or a 2-node kind cluster).
 2. The **operator installed** (see the main [README](../../README.md)). The
-   manifests assume the default legacy-alias Service
-   `mycedrive.mig-ready.svc.cluster.local`; edit `MIGR_COOR` in the YAML if
-   your operator lives elsewhere.
+   runner sets `MIGR_COOR` to `mycedrive.<namespace>.svc.cluster.local`
+   automatically; the manifest value is only the readable `mig-ready` default
+   for manual use.
 3. **Images available on the nodes** (build order matters — the dmtcp image
    bundles the agent):
 
@@ -46,10 +46,11 @@ survives from tells you which mechanism did the work.
 ./examples/run-scenario.sh both              # or: process-only | volume-only
 ```
 
-The script: checks prerequisites → deploys the scenario → waits for the pod →
-publishes a retained message → creates a `Migration` CR targeting another
-node → prints each phase transition (`Pending → Syncing → Checkpointing →
-Transferring → Restoring → Completed`) → waits for the pod on the target
+The script: checks prerequisites → labels an initial node for deterministic
+StatefulSet placement → deploys the scenario → waits for the pod → publishes
+a retained message → creates a `Migration` CR targeting another node → prints
+each phase transition (`Pending → Checkpointing → Transferring → Restoring →
+Completed`) → waits for the pod on the target
 node → subscribes and compares the retained message → **PASS/FAIL**.
 
 Useful flags: `-n NAMESPACE` (default `mig-ready`), `-t TARGET_NODE` (default:
@@ -61,7 +62,9 @@ auto-picked), `--skip-deploy` (re-run a migration on an existing deployment),
 Using `both` as the example; substitute `mq-proc`/`mq-vol` for the others.
 
 ```sh
-# 1. Deploy
+# 1. Give the StatefulSet its initial placement, then deploy. The operator
+# moves the label to the target node when a Migration is created.
+kubectl label node <initial-node> mig-ready=true --overwrite
 kubectl apply -n mig-ready -f examples/scenarios/both/
 kubectl rollout status sts/mq-both -n mig-ready
 

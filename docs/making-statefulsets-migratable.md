@@ -34,19 +34,24 @@ The MyceDrive operator is deployed once per cluster and orchestrates the migrati
 
 ## Step 1 — Modify the application image
 
-Your application image must contain the `go-agent` binary and a symlink named `end_container` pointing to it. The binary is statically compiled (`CGO_ENABLED=0`) so it runs on any Linux container regardless of the base image.
+The `dmtcp-init` container supplies `go-agent`, `end_container`, and DMTCP
+under the shared `/dmtcp/bin` volume, so do **not** copy them into your
+application image. Your image does need a MyceDrive-aware entrypoint: the
+pod-spec patch cannot safely replace an arbitrary image entrypoint.
 
-Add these two lines to your Dockerfile (after your application layers):
+Use the Mosquitto entrypoint as the reference. Its essential flow is:
 
-```dockerfile
-# Inject the MyceDrive Execution Agent
-COPY --from=docker.io/mycedrive/go-agent:dev /build/go-agent /usr/local/bin/go-agent
-RUN ln -s /usr/local/bin/go-agent /usr/local/bin/end_container
+```sh
+/dmtcp/bin/go-agent "${VOLUME_ROOT_DIR:-}" || true
+if [ -f "${DMTCP_CHECKPOINT_DIR:-/dmtcp/checkpoints}/.restored" ]; then
+  exit 0
+fi
+exec /dmtcp/bin/dmtcp_launch -j "$START_UP"
 ```
 
-The `go-agent` binary path inside `mycedrive/go-agent:dev` is `/build/go-agent` (produced by `make build-agent`). Adjust the path if you build the image yourself.
-
-No changes to your `CMD` or `ENTRYPOINT` are required. The EA is invoked at container start via the `START_UP` env var — it calls `dmtcp_launch` internally to wrap that command.
+The `START_UP` environment variable is supplied by `make-migratable.sh`.
+Add the equivalent of this wrapper to your image and make it its entrypoint;
+see `examples/mosquitto_d/docker-entrypoint.sh` for the complete version.
 
 Rebuild and push your image before running the script.
 
@@ -67,7 +72,7 @@ The script patches the StatefulSet in-place and creates the MigratableWorkload C
   [-d <checkpoint-dir>]              # default: /dmtcp/checkpoints
   [--process-migration true|false]   # default: true
   [--volume-migration true|false]    # default: true
-  [--pre-sync-rounds N]              # default: 1 (N >= 0)
+  [--termination-grace-period N]     # default: 600
   [--no-cr]                          # skip MigratableWorkload CR creation
   [--dry-run]                        # print all YAML; do not apply anything
 ```
@@ -82,7 +87,7 @@ The script patches the StatefulSet in-place and creates the MigratableWorkload C
   -u "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf"
 ```
 
-### Example — disable volume migration, increase pre-sync rounds
+### Example — process-only migration
 
 ```bash
 ./scripts/make-migratable.sh \
@@ -90,8 +95,7 @@ The script patches the StatefulSet in-place and creates the MigratableWorkload C
   -s mosquitto \
   -c mosquitto \
   -u "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf" \
-  --volume-migration false \
-  --pre-sync-rounds 3
+  --volume-migration false
 ```
 
 ### Dry-run first
@@ -116,8 +120,8 @@ Always preview the patches before applying:
 | Toggle env vars (when non-default) | `ENABLE_PROCESS_MIGRATION=false` and/or `ENABLE_VOLUME_MIGRATION=false` |
 | `volumeMount` on the app container | `/dmtcp` — makes DMTCP binaries and checkpoint files accessible |
 | `preStop` lifecycle hook | Calls `/dmtcp/bin/end_container <operator-host> $(POD_NAME) <ckpt-dir>` |
-| Pod template label | `mig-ready: "true"` — matches the operator's default placement label |
-| ClusterRoleBinding | Binds the pod's ServiceAccount to `mycedrive-coordinator-role` |
+| Pod template placement | `nodeSelector: mig-ready=true`, plus a `mig-ready=true` label on each current StatefulSet node before rollout |
+| Termination grace period | Defaults to 600 seconds so checkpoint creation and transfer complete before kubelet force-kills the pod |
 | MigratableWorkload CR | Tells the operator this StatefulSet is migration-eligible (see below) |
 
 ---
@@ -145,7 +149,7 @@ spec:
     value: "true"
 ```
 
-Non-default flags add fields. For example, `--volume-migration false --pre-sync-rounds 3` produces:
+Non-default flags add fields. For example, `--volume-migration false` produces:
 
 ```yaml
 spec:
@@ -156,7 +160,6 @@ spec:
     key: mig-ready
     value: "true"
   volumeMigration: false
-  preSyncRounds: 3
 ```
 
 Fields at their defaults are omitted to keep the CR minimal.
@@ -174,7 +177,7 @@ Fields at their defaults are omitted to keep the CR minimal.
 | `layerCount` | int | `1` | Number of overlayfs layers to checkpoint |
 | `processMigration` | bool | `true` | Enable DMTCP process checkpointing |
 | `volumeMigration` | bool | `true` | Enable overlayfs volume checkpointing |
-| `preSyncRounds` | int ≥ 0 | `1` | Pre-migration dirty-page sync iterations |
+| `preSyncRounds` | `0` only | `0` | Reserved for a future pre-copy protocol; do not set it today |
 
 ---
 
@@ -239,13 +242,17 @@ The overlayfs layer stack (`go-agent/overlay/`) checkpoints the container's writ
 
 ### StatefulSet controller semantics
 
-The operator's `/migrate` endpoint was originally built around Deployments (scale-up/scale-down). For StatefulSets:
+StatefulSet migration keeps the ordinal and stable DNS identity. The
+controller labels the target node `mig-ready=true`, removes that label from
+the source node, then deletes the source pod. Kubernetes recreates the same
+ordinal on the target, where its EA registers and receives the checkpoint.
+The pod template therefore **must** include `nodeSelector: mig-ready=true`;
+the onboarding script and shipped scenarios configure it.
 
-- Scaling up creates a pod with a new ordinal, not a replacement at the same stable identity.
-- The `preStop` hook and checkpoint flow work correctly regardless of controller type.
-- You may need to manually delete the source pod after the destination pod has registered and received the checkpoint, rather than relying on the operator's automated scale-down sequence.
-
-Full StatefulSet support (sticky identity migration) is tracked as an open item in the operator.
+Pre-copy rounds remain unavailable for StatefulSets because there cannot be
+a destination EA with the same stable identity while the source runs. Set
+`preSyncRounds: 0` (the default); the final overlay checkpoint is transferred
+during the termination grace period.
 
 ### DMTCP process compatibility
 
@@ -258,9 +265,13 @@ Full StatefulSet support (sticky identity migration) is tracked as an open item 
 
 DMTCP preserves TCP connections established **after** `dmtcp_launch` wrapped the process. Use a Kubernetes Service with a stable ClusterIP in front of the StatefulSet so clients reconnect transparently after migration.
 
-### Image build requirement
+### Image entrypoint requirement
 
-The script patches the pod spec but cannot modify your container image. The `go-agent` binary and `end_container` symlink must be present in the image before the script is run. If they are missing the pod starts but the preStop hook fails silently and migration does not function.
+The script patches the pod spec but cannot modify your container image. The
+image must use an entrypoint that invokes `/dmtcp/bin/go-agent` before it
+launches the application through `dmtcp_launch`; merely setting `START_UP`
+does not run the agent. The supplied init container makes those binaries
+available at runtime.
 
 ---
 

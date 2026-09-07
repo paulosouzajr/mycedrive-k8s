@@ -7,6 +7,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -20,20 +22,52 @@ func podBelongsToWorkload(podName, workloadName string) bool {
 	return strings.HasPrefix(podName, workloadName+"-")
 }
 
-// listWorkloadPods returns the pods of the referenced workload, matched by
-// namespace and name prefix.
+// listWorkloadPods returns the pods selected by the referenced workload's
+// pod selector. Names are not a reliable ownership boundary: a StatefulSet
+// named "web" may coexist with a Deployment named "web-canary", whose pod
+// names have the same prefix.
 func listWorkloadPods(ctx context.Context, c client.Client, mw *mycedrivev1alpha1.MigratableWorkload) ([]corev1.Pod, error) {
+	selector, err := workloadPodSelector(ctx, c, mw)
+	if err != nil {
+		return nil, err
+	}
 	var list corev1.PodList
-	if err := c.List(ctx, &list, client.InNamespace(mw.Namespace)); err != nil {
+	if err := c.List(ctx, &list, client.InNamespace(mw.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return nil, fmt.Errorf("list pods in %s: %w", mw.Namespace, err)
 	}
-	var out []corev1.Pod
-	for i := range list.Items {
-		if podBelongsToWorkload(list.Items[i].Name, mw.Spec.WorkloadRef.Name) {
-			out = append(out, list.Items[i])
+	return list.Items, nil
+}
+
+// workloadPodSelector resolves the exact label selector from the referenced
+// workload. It is deliberately shared by neither status mirroring nor the
+// REST API because those paths only have an agent pod name, not a pod object.
+func workloadPodSelector(ctx context.Context, c client.Client, mw *mycedrivev1alpha1.MigratableWorkload) (labels.Selector, error) {
+	key := types.NamespacedName{Namespace: mw.Namespace, Name: mw.Spec.WorkloadRef.Name}
+	var raw *metav1.LabelSelector
+	switch mw.Spec.WorkloadRef.Kind {
+	case mycedrivev1alpha1.WorkloadKindStatefulSet:
+		var sts appsv1.StatefulSet
+		if err := c.Get(ctx, key, &sts); err != nil {
+			return nil, fmt.Errorf("get StatefulSet %s/%s: %w", key.Namespace, key.Name, err)
 		}
+		raw = sts.Spec.Selector
+	case mycedrivev1alpha1.WorkloadKindDeployment:
+		var dep appsv1.Deployment
+		if err := c.Get(ctx, key, &dep); err != nil {
+			return nil, fmt.Errorf("get Deployment %s/%s: %w", key.Namespace, key.Name, err)
+		}
+		raw = dep.Spec.Selector
+	default:
+		return nil, fmt.Errorf("unsupported workload kind %q", mw.Spec.WorkloadRef.Kind)
 	}
-	return out, nil
+	if raw == nil {
+		return nil, fmt.Errorf("workload %s/%s has no pod selector", key.Namespace, key.Name)
+	}
+	selector, err := metav1.LabelSelectorAsSelector(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse pod selector for %s/%s: %w", key.Namespace, key.Name, err)
+	}
+	return selector, nil
 }
 
 // findPodOnNode returns the newest pod scheduled on node, excluding

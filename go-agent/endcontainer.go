@@ -72,8 +72,12 @@ func endContainer(coordAddr, podName, checkpointDir string) error {
 		return nil
 	}
 
-	procMig := utils.ProcessMigrationEnabled()
-	volMig := utils.VolumeMigrationEnabled()
+	// The coordinator snapshots these toggles from the MigratableWorkload
+	// before it deletes the source pod.  Honour that snapshot instead of the
+	// pod environment so a Migration CR cannot checkpoint a mechanism the
+	// controller is intentionally skipping.
+	procMig := resp.ProcessMigration
+	volMig := resp.VolumeMigration
 	dest := resp.DestAddress
 	if dest == "" {
 		log.Println("warning: MC did not provide destAddress; checkpoints stay local for MC-driven copy")

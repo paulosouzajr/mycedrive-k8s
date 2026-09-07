@@ -43,6 +43,13 @@ spec:
         app: mq-both
         mig-ready: "true"
     spec:
+      # The controller moves this node label from source to target before it
+      # deletes the pod, making the StatefulSet replacement deterministic.
+      nodeSelector:
+        mig-ready: "true"
+      # DMTCP checkpoint creation plus layer transfer can exceed Kubernetes'
+      # 30-second default for realistic working sets.
+      terminationGracePeriodSeconds: 600
       volumes:
         - name: dmtcp-shared
           emptyDir: {}
@@ -129,4 +136,3 @@ spec:
     name: mq-both
   processMigration: true
   volumeMigration: true
-  preSyncRounds: 1
