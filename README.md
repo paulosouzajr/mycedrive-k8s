@@ -45,7 +45,8 @@ Installing into `mig-ready` matches the defaults used by the example
 scenarios and `make-migratable.sh` (`MIGR_COOR=mycedrive.mig-ready.svc.cluster.local`);
 if you pick another namespace, set `MIGR_COOR` accordingly in your workloads.
 
-Or install the local chart:
+To build, package, install, and test a local operator image on a two-node
+cluster, run `./scripts/install-and-test.sh`. Or install the local chart:
 
 ```sh
 helm install mycedrive-operator deployment/operator
