@@ -42,6 +42,7 @@ func main() {
 		restAddr             string
 		defaultNamespace     string
 		enableLeaderElection bool
+		dashboardEnabled     bool
 		historyEnabled       bool
 		historyLimit         int
 	)
@@ -50,6 +51,7 @@ func main() {
 	flag.StringVar(&restAddr, "rest-bind-address", ":8080", "The address the Migration Coordinator REST API binds to.")
 	flag.StringVar(&defaultNamespace, "default-namespace", "mig-ready", "Namespace used for Migrations created through the legacy REST API.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
+	flag.BoolVar(&dashboardEnabled, "dashboard-enabled", true, "Serve the embedded operator dashboard at /dashboard/.")
 	flag.BoolVar(&historyEnabled, "history-enabled", true, "Enable the migration history & metrics module (also toggleable at runtime via the REST API).")
 	flag.IntVar(&historyLimit, "history-limit", history.DefaultLimit, "Maximum number of migrations kept in the in-memory history.")
 
@@ -119,6 +121,7 @@ func main() {
 		Addr:             restAddr,
 		DefaultNamespace: defaultNamespace,
 		Log:              ctrl.Log.WithName("restapi"),
+		DashboardEnabled: dashboardEnabled,
 		History:          hist,
 	}); err != nil {
 		setupLog.Error(err, "unable to add REST API server")

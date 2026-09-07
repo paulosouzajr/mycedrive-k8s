@@ -6,5 +6,5 @@ import "embed"
 
 // FS holds the dashboard static assets.
 //
-//go:embed index.html
+//go:embed index.html assets/*
 var FS embed.FS

@@ -230,6 +230,26 @@ func TestLegacyPodsShape(t *testing.T) {
 	}
 }
 
+// TestDashboardDisabledPreservesCoordinatorAPI protects the optional
+// dashboard boundary: disabling the UI must not interrupt existing agents.
+func TestDashboardDisabledPreservesCoordinatorAPI(t *testing.T) {
+	_, mux := newTestServer()
+
+	dashboardRequest := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
+	dashboardResponse := httptest.NewRecorder()
+	mux.ServeHTTP(dashboardResponse, dashboardRequest)
+	if dashboardResponse.Code != http.StatusNotFound {
+		t.Fatalf("disabled dashboard = %d, want 404", dashboardResponse.Code)
+	}
+
+	podsRequest := httptest.NewRequest(http.MethodGet, "/pods", nil)
+	podsResponse := httptest.NewRecorder()
+	mux.ServeHTTP(podsResponse, podsRequest)
+	if podsResponse.Code != http.StatusOK {
+		t.Fatalf("coordinator API = %d, want 200", podsResponse.Code)
+	}
+}
+
 func TestRegisterValidation(t *testing.T) {
 	_, mux := newTestServer()
 	rr, _ := doJSON(t, mux, http.MethodPost, "/register", map[string]any{"podAddress": "x"})

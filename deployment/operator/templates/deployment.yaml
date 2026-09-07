@@ -41,6 +41,7 @@ spec:
             - --metrics-bind-address={{ .Values.metrics.bindAddress }}
             - --leader-elect={{ .Values.leaderElection.enabled }}
             - --default-namespace={{ .Values.defaultNamespace }}
+            - --dashboard-enabled={{ .Values.dashboard.enabled }}
             - --history-enabled={{ .Values.history.enabled }}
             - --history-limit={{ .Values.history.limit }}
           ports:

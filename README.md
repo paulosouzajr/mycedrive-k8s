@@ -137,7 +137,11 @@ manual walkthrough and troubleshooting.
 kubectl port-forward svc/mycedrive-operator 8080:80
 ```
 
-Open `http://localhost:8080/dashboard/` — shows registered pods, in-flight migrations with phase, and a trigger-migration form.
+Open `http://localhost:8080/dashboard/` — it shows live agent health,
+migration status, timing history, and a form to create migration requests.
+The dashboard is enabled by default. To run the operator without the UI while
+preserving every coordinator and Execution Agent API endpoint, set
+`dashboard.enabled=false` in the Helm release.
 
 ## Building from Source
 

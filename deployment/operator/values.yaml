@@ -43,6 +43,11 @@ service:
     enabled: true
     name: mycedrive
 
+# Embedded operations dashboard. When disabled, /dashboard/ returns 404;
+# all coordinator and Execution Agent REST API routes remain available.
+dashboard:
+  enabled: true
+
 # Controller-runtime metrics endpoint ("0" disables).
 metrics:
   bindAddress: "0"
