@@ -22,4 +22,13 @@ go.work
 
 # Misc
 .idea
+dist/
 
+.claude/*
+.claude-flow/*
+
+*.json
+*.jsonl
+
+CLAUDE.md
+*.pdf

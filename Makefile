@@ -17,6 +17,7 @@ DOCKERHUB_ORG ?= mycedrive
 TAG        ?= dev
 NAMESPACE  ?= mig-ready
 PULL_IMAGES ?= false
+SCENARIO   ?= process-only
 HELM_CHART  = deployment/operator
 HELM_REL    = mycedrive-operator
 # The operator chart also creates a legacy-alias Service named "mycedrive",
@@ -32,7 +33,8 @@ IMG_DMTCP    = $(DOCKERHUB_ORG)/dmtcp:$(TAG)
         build-operator build-agent build-dmtcp build-example \
         push-operator push-agent push-dmtcp \
         prepare-images \
-        login minikube-setup minikube-build test lint clean
+        login minikube-setup minikube-build test lint clean \
+        package-operator install-and-test
 
 ##############################################################################
 # Default
@@ -174,6 +176,17 @@ test:
 	cd operator && go test ./...
 	@echo "==> Running functional tests (agent <-> operator wire contract)"
 	cd tests/functional && go test ./...
+
+##############################################################################
+# Distribution and end-to-end verification
+##############################################################################
+package-operator:
+	./scripts/package-operator.sh
+
+# Requires an existing two-node kind/minikube (or registry-backed) cluster.
+# Override SCENARIO=both to exercise process + overlay migration together.
+install-and-test:
+	./scripts/install-and-test.sh --scenario $(SCENARIO)
 
 ##############################################################################
 # Lint / vet
