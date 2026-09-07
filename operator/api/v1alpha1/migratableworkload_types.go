@@ -17,7 +17,10 @@ const (
 	DefaultCheckpointDir       = "/dmtcp/checkpoints"
 	DefaultTransferPort        = 2486
 	DefaultLayerCount          = 1
-	DefaultPreSyncRounds       = 1
+	// Pre-copy needs a running destination agent. A StatefulSet replacement
+	// cannot provide one while retaining its stable pod identity, so this is
+	// deliberately disabled until that protocol is implemented end to end.
+	DefaultPreSyncRounds = 0
 )
 
 // WorkloadReference points at the Kubernetes workload (in the same namespace
@@ -80,10 +83,11 @@ type MigratableWorkloadSpec struct {
 	// +optional
 	VolumeMigration *bool `json:"volumeMigration,omitempty"`
 
-	// PreSyncRounds is the number of iterative overlay snapshot transfer
-	// rounds performed while the source pod is still running (before
-	// downtime), per the CloudCom 2020 flow. Only used when
-	// VolumeMigration is enabled. Defaults to 1; 0 disables pre-sync.
+	// PreSyncRounds is reserved for a future pre-copy protocol. It must be
+	// zero today: a StatefulSet cannot have a destination agent listening
+	// while its source pod keeps the same stable identity. The final overlay
+	// layer is still transferred during the pod termination flow.
+	// +kubebuilder:validation:Maximum=0
 	// +optional
 	PreSyncRounds *int32 `json:"preSyncRounds,omitempty"`
 }
@@ -183,18 +187,10 @@ func (m *MigratableWorkload) VolumeMigrationEnabled() bool {
 	return m.Spec.VolumeMigration == nil || *m.Spec.VolumeMigration
 }
 
-// EffectivePreSyncRounds returns the number of pre-downtime overlay sync
-// rounds, honouring the VolumeMigration toggle.
+// EffectivePreSyncRounds returns zero until a pre-copy protocol is supported
+// by both the controller and Execution Agent. Retaining the field keeps older
+// manifests readable while preventing a Migration from waiting forever.
 func (m *MigratableWorkload) EffectivePreSyncRounds() int32 {
-	if !m.VolumeMigrationEnabled() {
-		return 0
-	}
-	if m.Spec.PreSyncRounds != nil {
-		if *m.Spec.PreSyncRounds < 0 {
-			return 0
-		}
-		return *m.Spec.PreSyncRounds
-	}
 	return DefaultPreSyncRounds
 }
 

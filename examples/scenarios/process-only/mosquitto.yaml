@@ -41,6 +41,9 @@ spec:
         app: mq-proc
         mig-ready: "true"
     spec:
+      nodeSelector:
+        mig-ready: "true"
+      terminationGracePeriodSeconds: 600
       volumes:
         - name: dmtcp-shared
           emptyDir: {}

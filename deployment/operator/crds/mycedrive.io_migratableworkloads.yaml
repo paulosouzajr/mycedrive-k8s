@@ -101,12 +101,14 @@ spec:
                   default: true
                 preSyncRounds:
                   description: >-
-                    Iterative overlay snapshot transfer rounds performed before
-                    downtime (volume migration pre-copy). 0 disables pre-sync.
+                    Reserved for a future pre-copy protocol. StatefulSet
+                    migrations currently require 0 because the destination
+                    agent cannot listen before the stable source pod stops.
                   type: integer
                   format: int32
-                  default: 1
+                  default: 0
                   minimum: 0
+                  maximum: 0
             status:
               type: object
               properties:

@@ -31,6 +31,7 @@ SKIP_DEPLOY=false
 CLEANUP=false
 TOPIC="demo/state"
 MIGRATION_TIMEOUT=600
+COORDINATOR_HOST="${MIGR_COOR:-}"
 
 usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -88,6 +89,9 @@ kubectl get crd migrations.mycedrive.io >/dev/null 2>&1 \
   || fail "Migration CRD not found — install the operator first (see README)"
 kubectl get ns "$NAMESPACE" >/dev/null 2>&1 \
   || kubectl create namespace "$NAMESPACE"
+if [ -z "$COORDINATOR_HOST" ]; then
+  COORDINATOR_HOST="mycedrive.${NAMESPACE}.svc.cluster.local"
+fi
 
 mapfile -t NODES < <(kubectl get nodes \
   -o jsonpath='{range .items[?(@.spec.unschedulable!=true)]}{.metadata.name}{"\n"}{end}')
@@ -98,9 +102,20 @@ echo "Schedulable nodes: ${NODES[*]}"
 # Deploy and seed
 ###############################################################################
 if ! $SKIP_DEPLOY; then
-  say "Deploying scenario '$SCENARIO' ($APP) to namespace $NAMESPACE"
-  kubectl apply -n "$NAMESPACE" -f "$DIR"
-  kubectl rollout status "statefulset/$APP" -n "$NAMESPACE" --timeout=180s
+    say "Deploying scenario '$SCENARIO' ($APP) to namespace $NAMESPACE"
+    # The StatefulSet uses this selector so its first pod has an explicit
+    # starting node. The operator moves the same label to the target during
+    # migration. Leave the label behind on cleanup: it is cluster placement
+    # policy, not a scenario-owned resource.
+    INITIAL_NODE="${NODES[0]}"
+    kubectl label node "$INITIAL_NODE" mig-ready=true --overwrite
+    echo "Initial placement label: $INITIAL_NODE (mig-ready=true)"
+    kubectl apply -n "$NAMESPACE" -f "$DIR"
+    # Scenario manifests retain mig-ready as their readable default, but the
+    # runner supports any namespace by patching the coordinator endpoint.
+    kubectl set env -n "$NAMESPACE" "statefulset/$APP" --containers=mosquitto \
+      "MIGR_COOR=$COORDINATOR_HOST"
+    kubectl rollout status "statefulset/$APP" -n "$NAMESPACE" --timeout=180s
 fi
 kubectl wait pod "$POD" -n "$NAMESPACE" --for=condition=Ready --timeout=120s
 

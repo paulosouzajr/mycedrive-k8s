@@ -86,6 +86,16 @@ func runAgent() {
 	checkpointDir := utils.EnvOr("DMTCP_CHECKPOINT_DIR", "/dmtcp/checkpoints")
 	dataDir := utils.EnvOr("DATA_DIR", "/data")
 
+	// Bind the transfer listener before registering.  The operator makes this
+	// address available to the source as soon as a duplicate registration is
+	// accepted; listening first removes the race where the source's preStop
+	// hook tries to stream a checkpoint before the target starts accepting
+	// connections.
+	transferListener, err := net.Listen("tcp", fmt.Sprintf(":%d", transferPort))
+	if err != nil {
+		log.Fatalf("listen for checkpoint transfer on :%d: %v", transferPort, err)
+	}
+
 	registerMsg := Message{
 		PodAddress:       net.JoinHostPort(os.Getenv("POD_IP"), strconv.Itoa(transferPort)),
 		ContainerPort:    transferPort,
@@ -98,10 +108,12 @@ func runAgent() {
 
 	reply, err := utils.PostJSON(coordAddr+"/register", registerMsg)
 	if err != nil {
+		_ = transferListener.Close()
 		log.Fatalf("Failed to register with Migration Coordinator: %v", err)
 	}
 	var response Message
 	if err := json.Unmarshal(reply, &response); err != nil {
+		_ = transferListener.Close()
 		log.Fatalf("Failed to parse register response: %v", err)
 	}
 	log.Printf("Register response from MC: %+v", response)
@@ -109,9 +121,13 @@ func runAgent() {
 	lm := overlay.NewLayerManager(dataDir, rootDir)
 
 	if response.IsMig {
-		runMigrationTarget(lm, transferPort, checkpointDir, procMig, volMig)
+		// The coordinator is authoritative for an active migration.  It uses
+		// the values snapshotted from the MigratableWorkload when it armed the
+		// source, so an in-flight migration cannot be changed by stale pod env.
+		runMigrationTarget(lm, transferListener, checkpointDir, response.ProcessMigration, response.VolumeMigration)
 		return
 	}
+	_ = transferListener.Close()
 
 	// Fresh start or non-migration duplicate registration.
 	if volMig {
@@ -124,13 +140,8 @@ func runAgent() {
 }
 
 // runMigrationTarget receives the source pod's checkpoints and restores.
-func runMigrationTarget(lm *overlay.LayerManager, transferPort int, checkpointDir string, procMig, volMig bool) {
-	log.Printf("Pod is migration target: listening on :%d for checkpoint transfer", transferPort)
-
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", transferPort))
-	if err != nil {
-		log.Fatalf("listen on :%d: %v", transferPort, err)
-	}
+func runMigrationTarget(lm *overlay.LayerManager, ln net.Listener, checkpointDir string, procMig, volMig bool) {
+	log.Printf("Pod is migration target: listening on %s for checkpoint transfer", ln.Addr())
 	defer ln.Close()
 
 	timeout := time.Duration(utils.EnvInt("RECEIVE_TIMEOUT_SECONDS", 600)) * time.Second

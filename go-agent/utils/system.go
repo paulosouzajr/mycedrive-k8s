@@ -90,8 +90,10 @@ type RemoveRequest struct {
 // additive field: when set it carries the host:port of the migration-target
 // Execution Agent so the source can stream checkpoints directly.
 type RemoveResponse struct {
-	NeedsCheckpoint bool   `json:"needsCheckpoint"`
-	DestAddress     string `json:"destAddress,omitempty"`
+	NeedsCheckpoint  bool   `json:"needsCheckpoint"`
+	ProcessMigration bool   `json:"processMigration"`
+	VolumeMigration  bool   `json:"volumeMigration"`
+	DestAddress      string `json:"destAddress,omitempty"`
 }
 
 // CopyNotification is the payload sent to POST /copy. LayerCount is additive.

@@ -9,18 +9,18 @@
 # Required:
 #   -n NAMESPACE            Kubernetes namespace of the target StatefulSet
 #   -s STATEFULSET          Name of the StatefulSet to patch
+#   -u START_CMD            Startup command for the image's MyceDrive-aware
+#                           entrypoint (see docs/making-statefulsets-migratable.md)
 #
 # Optional:
 #   -c CONTAINER            Application container to wrap (default: first container)
-#   -u START_CMD            Startup command wrapped by DMTCP, e.g.
-#                           "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf"
 #   -m MC_HOST              Operator service hostname
 #                           (default: mycedrive.mig-ready.svc.cluster.local)
 #   -i DMTCP_IMAGE          DMTCP sidecar image (default: mycedrive/dmtcp:dev)
 #   -d CKPT_DIR             Checkpoint directory in the pod (default: /dmtcp/checkpoints)
 #   --process-migration     true|false — enable DMTCP process checkpointing (default: true)
 #   --volume-migration      true|false — enable overlayfs volume checkpointing (default: true)
-#   --pre-sync-rounds N     Pre-migration dirty-page sync rounds, N >= 0 (default: 1)
+#   --termination-grace-period N  Seconds allowed for checkpoint + transfer (default: 600)
 #   --no-cr                 Skip creating the MigratableWorkload CR
 #   --dry-run               Print all generated YAML; do not apply anything
 #   -h                      Show this help message
@@ -35,9 +35,9 @@
 #          DMTCP_COORD_HOST, DMTCP_CHECKPOINT_DIR
 #        - ENABLE_PROCESS_MIGRATION / ENABLE_VOLUME_MIGRATION (when non-default)
 #        - preStop lifecycle hook calling /dmtcp/bin/end_container
-#   5. Labels the pod template mig-ready=true.
-#   6. Creates a ClusterRoleBinding for the pod's ServiceAccount.
-#   7. Creates a MigratableWorkload CR (mycedrive.io/v1alpha1) unless --no-cr.
+#   5. Adds nodeSelector mig-ready=true and labels the current pod node(s)
+#      before rollout, so the operator can move a replacement predictably.
+#   6. Creates a MigratableWorkload CR (mycedrive.io/v1alpha1) unless --no-cr.
 #
 # Idempotent: safe to run more than once against the same StatefulSet.
 
@@ -55,7 +55,7 @@ CKPT_DIR="/dmtcp/checkpoints"
 START_CMD=""
 PROCESS_MIG="true"
 VOLUME_MIG="true"
-PRE_SYNC_ROUNDS="1"
+TERMINATION_GRACE_PERIOD="600"
 NO_CR=false
 DRY_RUN=false
 
@@ -86,9 +86,9 @@ validate_bool() {
         || die "$2 must be 'true' or 'false', got '$1'"
 }
 
-validate_nonneg_int() {
-    [[ "$1" =~ ^[0-9]+$ ]] \
-        || die "$2 must be a non-negative integer, got '$1'"
+validate_positive_int() {
+    [[ "$1" =~ ^[1-9][0-9]*$ ]] \
+        || die "$2 must be a positive integer, got '$1'"
 }
 
 ###############################################################################
@@ -105,7 +105,7 @@ while [[ $# -gt 0 ]]; do
         -d)                   CKPT_DIR="$2";        shift 2 ;;
         --process-migration)  PROCESS_MIG="$2";     shift 2 ;;
         --volume-migration)   VOLUME_MIG="$2";      shift 2 ;;
-        --pre-sync-rounds)    PRE_SYNC_ROUNDS="$2"; shift 2 ;;
+        --termination-grace-period) TERMINATION_GRACE_PERIOD="$2"; shift 2 ;;
         --no-cr)              NO_CR=true;           shift ;;
         --dry-run)            DRY_RUN=true;         shift ;;
         -h|--help)
@@ -117,18 +117,18 @@ done
 
 [[ -n "${NAMESPACE}" ]]   || die "-n NAMESPACE is required"
 [[ -n "${STATEFULSET}" ]] || die "-s STATEFULSET is required"
+[[ -n "${START_CMD}" ]]   || die "-u START_CMD is required; the image entrypoint must invoke /dmtcp/bin/go-agent before starting it"
 
 validate_bool        "${PROCESS_MIG}"    "--process-migration"
 validate_bool        "${VOLUME_MIG}"     "--volume-migration"
-validate_nonneg_int  "${PRE_SYNC_ROUNDS}" "--pre-sync-rounds"
+validate_positive_int "${TERMINATION_GRACE_PERIOD}" "--termination-grace-period"
 
 require_cmd kubectl
 
 ###############################################################################
-# Resolve target container name and ServiceAccount.
+# Resolve target container name.
 # In dry-run mode with -c supplied we skip the live cluster read.
 ###############################################################################
-SA="default"
 SS_JSON=""
 
 if [[ "${DRY_RUN}" == "true" && -n "${CONTAINER}" ]]; then
@@ -151,46 +151,8 @@ else
     fi
 fi
 
-if [[ -n "${SS_JSON}" ]]; then
-    _sa=$(printf '%s' "${SS_JSON}" \
-        | grep -o '"serviceAccountName": "[^"]*"' \
-        | awk -F'"' '{print $4}' || true)
-    [[ -n "${_sa}" ]] && SA="${_sa}"
-fi
-log "ServiceAccount: ${SA}"
-
 ###############################################################################
-# 1. ClusterRoleBinding — binds the pod SA to the operator's ClusterRole so
-#    the operator can discover and manage this pod.
-###############################################################################
-CRB_NAME="mycedrive-app-binding-${NAMESPACE}-${SA}"
-CRB_YAML=$(cat <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: ${CRB_NAME}
-  labels:
-    app.kubernetes.io/managed-by: make-migratable
-subjects:
-  - kind: ServiceAccount
-    name: ${SA}
-    namespace: ${NAMESPACE}
-roleRef:
-  kind: ClusterRole
-  name: mycedrive-coordinator-role
-  apiGroup: rbac.authorization.k8s.io
-EOF
-)
-
-if [[ "${DRY_RUN}" == "false" ]] \
-        && kubectl get clusterrolebinding "${CRB_NAME}" >/dev/null 2>&1; then
-    log "ClusterRoleBinding ${CRB_NAME} already exists; skipping"
-else
-    kubectl_apply "ClusterRoleBinding/${CRB_NAME}" "${CRB_YAML}"
-fi
-
-###############################################################################
-# 2. Build optional env-toggle lines for ENABLE_PROCESS_MIGRATION /
+# 1. Build optional env-toggle lines for ENABLE_PROCESS_MIGRATION /
 #    ENABLE_VOLUME_MIGRATION.  Only injected when the caller explicitly sets
 #    them to false (agent defaults are true, so no need to repeat the default).
 ###############################################################################
@@ -207,6 +169,27 @@ if [[ "${VOLUME_MIG}" == "false" ]]; then
 fi
 
 ###############################################################################
+# 2. Label the nodes that host the existing StatefulSet pods before the
+#    pod-template nodeSelector is added. This prevents a rolling update from
+#    leaving the replacement Pending. The operator moves this label from the
+#    source node to the target node during a migration.
+###############################################################################
+if [[ "${DRY_RUN}" == "false" ]]; then
+    mapfile -t CURRENT_NODES < <(
+        kubectl get pods -n "${NAMESPACE}" \
+          -o jsonpath='{range .items[*]}{.metadata.ownerReferences[0].kind}{" "}{.metadata.ownerReferences[0].name}{" "}{.spec.nodeName}{"\n"}{end}' \
+          | awk -v sts="${STATEFULSET}" '$1 == "StatefulSet" && $2 == sts && $3 != "" { print $3 }' \
+          | sort -u
+    )
+    [[ "${#CURRENT_NODES[@]}" -gt 0 ]] \
+        || die "no scheduled pods found for StatefulSet ${NAMESPACE}/${STATEFULSET}"
+    for node in "${CURRENT_NODES[@]}"; do
+        kubectl label node "${node}" mig-ready=true --overwrite
+        log "Labelled current StatefulSet node ${node} with mig-ready=true"
+    done
+fi
+
+###############################################################################
 # 3. Strategic-merge patch for the StatefulSet pod template.
 #    mergeKey for volumes/initContainers/containers is "name", so the patch
 #    adds new entries and leaves existing ones untouched.
@@ -220,6 +203,9 @@ spec:
       labels:
         mig-ready: "true"
     spec:
+      terminationGracePeriodSeconds: ${TERMINATION_GRACE_PERIOD}
+      nodeSelector:
+        mig-ready: "true"
       volumes:
         - name: dmtcp-shared
           emptyDir: {}
@@ -310,10 +296,6 @@ else
     if [[ "${VOLUME_MIG}" == "false" ]]; then
         EXTRA_SPEC="${EXTRA_SPEC}
   volumeMigration: false"
-    fi
-    if [[ "${PRE_SYNC_ROUNDS}" != "1" ]]; then
-        EXTRA_SPEC="${EXTRA_SPEC}
-  preSyncRounds: ${PRE_SYNC_ROUNDS}"
     fi
     if [[ "${CKPT_DIR}" != "/dmtcp/checkpoints" ]]; then
         EXTRA_SPEC="${EXTRA_SPEC}
