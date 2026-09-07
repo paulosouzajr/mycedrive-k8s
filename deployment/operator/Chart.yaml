@@ -6,8 +6,8 @@ description: |
   MigratableWorkload and Migration CRDs. Embeds the Migration Coordinator
   REST API consumed by the Execution Agents.
 type: application
-version: 0.1.0
-appVersion: "dev"
+version: 0.3.0
+appVersion: "0.3.0"
 keywords:
   - migration
   - dmtcp
