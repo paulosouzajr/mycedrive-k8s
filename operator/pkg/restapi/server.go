@@ -29,6 +29,9 @@ type Server struct {
 	Addr             string
 	DefaultNamespace string
 	Log              logr.Logger
+	// DashboardDisabled prevents the embedded dashboard from being served.
+	// Agent and coordinator API routes stay available when it is true.
+	DashboardDisabled bool
 	// History is the optional migration-metrics module; nil when not wired.
 	History *history.Store
 }
@@ -102,8 +105,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/history/config", s.handleHistoryConfigGet)
 	mux.HandleFunc("POST /api/v1/history/config", s.handleHistoryConfigSet)
 
-	// Embedded static dashboard.
-	mux.Handle("GET /dashboard/", http.StripPrefix("/dashboard/", http.FileServerFS(dashboard.FS)))
+	if !s.DashboardDisabled {
+		mux.Handle("GET /dashboard/", http.StripPrefix("/dashboard/", http.FileServerFS(dashboard.FS)))
+	}
 }
 
 // writeJSON serialises v with the given HTTP status code.

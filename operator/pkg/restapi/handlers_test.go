@@ -15,10 +15,19 @@ import (
 // newTestServer returns a Server wired to a fresh registry and a test mux.
 // The Kubernetes client is nil: routes touching it are not exercised here.
 func newTestServer() (*Server, *http.ServeMux) {
+	return newTestServerWithDashboardDisabled(false)
+}
+
+func newTestServerWithoutDashboard() (*Server, *http.ServeMux) {
+	return newTestServerWithDashboardDisabled(true)
+}
+
+func newTestServerWithDashboardDisabled(dashboardDisabled bool) (*Server, *http.ServeMux) {
 	s := &Server{
-		Registry:         registry.New(),
-		DefaultNamespace: "mig-ready",
-		Log:              logr.Discard(),
+		Registry:          registry.New(),
+		DefaultNamespace:  "mig-ready",
+		Log:               logr.Discard(),
+		DashboardDisabled: dashboardDisabled,
 	}
 	mux := http.NewServeMux()
 	s.routes(mux)
@@ -227,6 +236,39 @@ func TestLegacyPodsShape(t *testing.T) {
 	}
 	if _, ok := pods[0]["podAddress"]; !ok {
 		t.Fatalf("legacy /pods must keep the podAddress key")
+	}
+}
+
+// TestDashboardEnabledByDefault ensures direct Server embedders retain the
+// dashboard behavior that existed before it became an optional module.
+func TestDashboardEnabledByDefault(t *testing.T) {
+	_, mux := newTestServer()
+
+	request := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("default dashboard = %d, want 200", response.Code)
+	}
+}
+
+// TestDashboardDisabledPreservesCoordinatorAPI protects the optional
+// dashboard boundary: disabling the UI must not interrupt existing agents.
+func TestDashboardDisabledPreservesCoordinatorAPI(t *testing.T) {
+	_, mux := newTestServerWithoutDashboard()
+
+	dashboardRequest := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
+	dashboardResponse := httptest.NewRecorder()
+	mux.ServeHTTP(dashboardResponse, dashboardRequest)
+	if dashboardResponse.Code != http.StatusNotFound {
+		t.Fatalf("disabled dashboard = %d, want 404", dashboardResponse.Code)
+	}
+
+	podsRequest := httptest.NewRequest(http.MethodGet, "/pods", nil)
+	podsResponse := httptest.NewRecorder()
+	mux.ServeHTTP(podsResponse, podsRequest)
+	if podsResponse.Code != http.StatusOK {
+		t.Fatalf("coordinator API = %d, want 200", podsResponse.Code)
 	}
 }
 

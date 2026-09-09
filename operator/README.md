@@ -22,7 +22,12 @@ Legacy agent contract (unchanged shapes): `POST /register`, `POST /remove`,
 `POST /copy`, `POST /migrate`. Additive endpoints for the fixed agent:
 `POST /sync`, `POST /restored`, `GET /poll?podName=`. UI endpoints:
 `GET /pods` (legacy shape), `GET /api/v1/pods`, `GET+POST /api/v1/migrations`,
-dashboard at `/dashboard/`.
+and the dashboard at `/dashboard/`.
+
+The dashboard is an optional embedded UI. It is enabled by default and can be
+disabled at startup with `--dashboard-enabled=false` (Helm:
+`dashboard.enabled=false`). Disabling it makes `/dashboard/` return `404`; it
+does not disable coordinator or Execution Agent API routes.
 
 History & metrics module (optional, on by default): `GET /api/v1/history`
 returns the recorded migrations (per-phase steps with durations, downtime
