@@ -8,6 +8,10 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/paulosouzajr/mycedrive-k8s/operator/pkg/registry"
 )
@@ -236,6 +240,171 @@ func TestLegacyPodsShape(t *testing.T) {
 	}
 	if _, ok := pods[0]["podAddress"]; !ok {
 		t.Fatalf("legacy /pods must keep the podAddress key")
+	}
+}
+
+// TestAPIPodsResolvesNodeForNormalRegistration protects first migrations:
+// freshly registered agents have not yet been touched by the controller.
+func TestAPIPodsResolvesNodeForNormalRegistration(t *testing.T) {
+	s, mux := newTestServer()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	s.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "payments-0", Namespace: "mig-ready"},
+			Spec:       corev1.PodSpec{NodeName: "worker-a"},
+		},
+	).Build()
+	s.Registry.Register("payments-0", "10.0.0.5:2486", 2486)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/api/v1/pods = %d, want 200 (%s)", rr.Code, rr.Body.String())
+	}
+
+	var response struct {
+		Pods []apiPod `json:"pods"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode /api/v1/pods response: %v", err)
+	}
+	if len(response.Pods) != 1 || response.Pods[0].Node != "worker-a" {
+		t.Fatalf("registered pod node = %#v, want worker-a", response.Pods)
+	}
+}
+
+// TestAPIPodsUsesCurrentKubernetesNode avoids creating a migration from a
+// stale in-memory node after a pod has been rescheduled.
+func TestAPIPodsUsesCurrentKubernetesNode(t *testing.T) {
+	s, mux := newTestServer()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	s.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "payments-0", Namespace: "mig-ready"},
+			Spec:       corev1.PodSpec{NodeName: "worker-current"},
+		},
+	).Build()
+	s.Registry.Register("payments-0", "10.0.0.5:2486", 2486)
+	s.Registry.SetNode("payments-0", "worker-stale")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/api/v1/pods = %d, want 200 (%s)", rr.Code, rr.Body.String())
+	}
+
+	var response struct {
+		Pods []apiPod `json:"pods"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode /api/v1/pods response: %v", err)
+	}
+	if len(response.Pods) != 1 || response.Pods[0].Node != "worker-current" {
+		t.Fatalf("registered pod node = %#v, want worker-current", response.Pods)
+	}
+}
+
+// TestAPIPodsClearsStaleNodeForPendingPod prevents a pod awaiting scheduling
+// from appearing migratable using a node retained from an earlier run.
+func TestAPIPodsClearsStaleNodeForPendingPod(t *testing.T) {
+	s, mux := newTestServer()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	s.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "payments-0", Namespace: "mig-ready"}},
+	).Build()
+	s.Registry.Register("payments-0", "10.0.0.5:2486", 2486)
+	s.Registry.SetNode("payments-0", "worker-stale")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/api/v1/pods = %d, want 200 (%s)", rr.Code, rr.Body.String())
+	}
+
+	var response struct {
+		Pods []apiPod `json:"pods"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode /api/v1/pods response: %v", err)
+	}
+	if len(response.Pods) != 1 || response.Pods[0].Node != "" {
+		t.Fatalf("pending pod node = %#v, want empty node", response.Pods)
+	}
+}
+
+// TestAPIPodsFallsBackToRegistryNodeWhenPodLookupFails keeps registrations
+// visible during a transient cache miss or shortly after a pod is deleted.
+func TestAPIPodsFallsBackToRegistryNodeWhenPodLookupFails(t *testing.T) {
+	s, mux := newTestServer()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	s.Client = fake.NewClientBuilder().WithScheme(scheme).Build()
+	s.Registry.Register("payments-0", "10.0.0.5:2486", 2486)
+	s.Registry.SetNode("payments-0", "worker-fallback")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/api/v1/pods = %d, want 200 (%s)", rr.Code, rr.Body.String())
+	}
+
+	var response struct {
+		Pods []apiPod `json:"pods"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode /api/v1/pods response: %v", err)
+	}
+	if len(response.Pods) != 1 || response.Pods[0].Node != "worker-fallback" {
+		t.Fatalf("fallback pod node = %#v, want worker-fallback", response.Pods)
+	}
+}
+
+// TestAPINodesExcludesUnavailableNodes protects the migration form from
+// offering a NotReady or cordoned Kubernetes node as a destination.
+func TestAPINodesExcludesUnavailableNodes(t *testing.T) {
+	s, mux := newTestServer()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	s.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-ready"}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}},
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-not-ready"}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}}},
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-cordoned"}, Spec: corev1.NodeSpec{Unschedulable: true}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}},
+	).Build()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/nodes", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/api/v1/nodes = %d, want 200 (%s)", rr.Code, rr.Body.String())
+	}
+
+	var response struct {
+		Nodes []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode /api/v1/nodes response: %v", err)
+	}
+	if len(response.Nodes) != 1 || response.Nodes[0].Name != "worker-ready" {
+		t.Fatalf("available migration nodes = %#v, want only worker-ready", response.Nodes)
 	}
 }
 

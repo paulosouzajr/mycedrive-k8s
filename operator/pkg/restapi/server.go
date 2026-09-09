@@ -97,6 +97,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// Dashboard / UI JSON.
 	mux.HandleFunc("GET /pods", s.handleLegacyPods)
 	mux.HandleFunc("GET /api/v1/pods", s.handleAPIPods)
+	mux.HandleFunc("GET /api/v1/nodes", s.handleAPINodes)
 	mux.HandleFunc("GET /api/v1/migrations", s.handleAPIMigrations)
 	mux.HandleFunc("POST /api/v1/migrations", s.handleMigrate)
 

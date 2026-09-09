@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+
 	mycedrivev1alpha1 "github.com/paulosouzajr/mycedrive-k8s/operator/api/v1alpha1"
 )
 
@@ -53,6 +56,11 @@ type apiMigration struct {
 	CompletionTime   *time.Time `json:"completionTime,omitempty"`
 }
 
+// apiNode is a Kubernetes node suitable for use as a migration destination.
+type apiNode struct {
+	Name string `json:"name"`
+}
+
 // handleLegacyPods implements GET /pods (legacy dashboard shape).
 func (s *Server) handleLegacyPods(w http.ResponseWriter, _ *http.Request) {
 	records := s.Registry.List()
@@ -64,16 +72,29 @@ func (s *Server) handleLegacyPods(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleAPIPods implements GET /api/v1/pods.
-func (s *Server) handleAPIPods(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleAPIPods(w http.ResponseWriter, r *http.Request) {
 	records := s.Registry.List()
 	out := make([]apiPod, 0, len(records))
 	for _, rec := range records {
 		registeredAt, lastSeen := rec.RegisteredAt, rec.LastSeen
+		nodeName := rec.Node
+		if s.Client != nil {
+			namespace := rec.WorkloadNamespace
+			if namespace == "" {
+				namespace = s.DefaultNamespace
+			}
+			if namespace != "" {
+				var pod corev1.Pod
+				if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: rec.Name}, &pod); err == nil {
+					nodeName = pod.Spec.NodeName
+				}
+			}
+		}
 		p := apiPod{
 			Name:             rec.Name,
 			Address:          rec.Address,
 			ContainerPort:    rec.ContainerPort,
-			Node:             rec.Node,
+			Node:             nodeName,
 			Workload:         rec.WorkloadName,
 			Namespace:        rec.WorkloadNamespace,
 			Migrating:        rec.Migrating,
@@ -93,6 +114,35 @@ func (s *Server) handleAPIPods(w http.ResponseWriter, _ *http.Request) {
 		out = append(out, p)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pods": out})
+}
+
+// handleAPINodes implements GET /api/v1/nodes. It only exposes Ready,
+// schedulable nodes so callers cannot select an unavailable destination.
+func (s *Server) handleAPINodes(w http.ResponseWriter, r *http.Request) {
+	var list corev1.NodeList
+	if err := s.Client.List(r.Context(), &list); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	out := make([]apiNode, 0, len(list.Items))
+	for i := range list.Items {
+		node := &list.Items[i]
+		if node.Spec.Unschedulable || !nodeReady(node) {
+			continue
+		}
+		out = append(out, apiNode{Name: node.Name})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": out})
+}
+
+func nodeReady(node *corev1.Node) bool {
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 // handleAPIMigrations implements GET /api/v1/migrations.

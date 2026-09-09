@@ -41,14 +41,14 @@ body {
   line-height: 1.5;
 }
 
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 
 button {
   border: 0;
   cursor: pointer;
 }
 
-button:focus-visible, input:focus-visible {
+button:focus-visible, input:focus-visible, select:focus-visible {
   outline: 3px solid rgba(81, 185, 243, 0.5);
   outline-offset: 2px;
 }
@@ -271,7 +271,7 @@ td:first-child { color: var(--ink); font-weight: 620; }
 .field-wide { grid-column: 1 / -1; }
 .field label { display: block; margin-bottom: 7px; color: var(--ink-soft); font-size: 12px; font-weight: 650; }
 .field-hint { margin: 6px 0 0; color: var(--ink-muted); font-size: 12px; }
-input {
+input, select {
   width: 100%;
   height: 40px;
   border: 1px solid var(--line);
@@ -282,8 +282,10 @@ input {
   transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
 }
 input::placeholder { color: #637893; }
-input:hover { border-color: var(--line-strong); }
-input:focus { border-color: var(--accent); background: #0b1a2c; box-shadow: 0 0 0 3px rgba(81, 185, 243, 0.12); outline: none; }
+input:hover, select:hover { border-color: var(--line-strong); }
+input:focus, select:focus { border-color: var(--accent); background: #0b1a2c; box-shadow: 0 0 0 3px rgba(81, 185, 243, 0.12); outline: none; }
+input[readonly] { color: var(--ink-soft); background: #0c1828; }
+select:disabled { color: var(--ink-muted); cursor: not-allowed; opacity: 0.78; }
 
 .form-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; grid-column: 1 / -1; margin-top: 4px; }
 .form-status { min-height: 20px; margin: 0; color: var(--ink-muted); font-size: 13px; }

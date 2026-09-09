@@ -168,6 +168,8 @@ undeploy:
 # Test
 ##############################################################################
 test:
+	@echo "==> Running dashboard tests"
+	node --test operator/dashboard/*.test.js
 	@echo "==> Running go-agent tests"
 	cd go-agent && go test ./...
 	@echo "==> Running operator tests"

@@ -104,28 +104,31 @@
         </div>
         <form class="migration-form" id="migration-form" novalidate>
           <div class="field field-wide">
-            <label for="workload">Workload</label>
-            <input id="workload" name="workload" type="text" autocomplete="off" placeholder="payments-api" list="workload-names" required>
-            <datalist id="workload-names"></datalist>
-            <p class="field-hint">A managed StatefulSet or Deployment.</p>
+            <label for="pod-name">Live fleet pod</label>
+            <select id="pod-name" name="podName" disabled required aria-describedby="pod-name-hint">
+              <option value="">Loading registered pods…</option>
+            </select>
+            <p class="field-hint" id="pod-name-hint">Select a registered execution agent to detect its workload and source node.</p>
           </div>
           <div class="field field-wide">
-            <label for="pod-name">Pod <span class="product-context">(optional)</span></label>
-            <input id="pod-name" name="podName" type="text" autocomplete="off" placeholder="payments-api-0" list="pod-names">
-            <datalist id="pod-names"></datalist>
-            <p class="field-hint">Leave empty to choose the pod on the source node.</p>
+            <label for="workload">Workload</label>
+            <input id="workload" name="workload" type="text" placeholder="Detected from the selected pod" readonly required>
+            <p class="field-hint">The managed StatefulSet or Deployment owning the selected pod.</p>
           </div>
           <div class="field">
             <label for="origin-node">Source node</label>
-            <input id="origin-node" name="sourceNode" type="text" autocomplete="off" placeholder="worker-a" required>
+            <input id="origin-node" name="sourceNode" type="text" placeholder="Detected from the selected pod" readonly required>
           </div>
           <div class="field">
             <label for="dest-node">Destination node</label>
-            <input id="dest-node" name="targetNode" type="text" autocomplete="off" placeholder="worker-b" required>
+            <select id="dest-node" name="targetNode" disabled required aria-describedby="dest-node-hint">
+              <option value="">Select a live fleet pod first</option>
+            </select>
+            <p class="field-hint" id="dest-node-hint">Ready, schedulable nodes other than the source will appear here.</p>
           </div>
           <div class="form-footer">
             <p class="form-status" id="migration-status" role="status" aria-live="polite"></p>
-            <button class="button button-primary" id="migrate-button" type="submit">Start migration</button>
+            <button class="button button-primary" id="migrate-button" type="submit" disabled>Start migration</button>
           </div>
         </form>
       </section>
@@ -152,6 +155,7 @@
 
     <p class="footer-note" id="last-refresh">Waiting for the first refresh</p>
   </main>
+  <script src="assets/migration-form.js" defer></script>
   <script src="assets/dashboard.js" defer></script>
 </body>
 </html>
