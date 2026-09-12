@@ -25,6 +25,14 @@ jobs:
             operator/go.sum
             tests/functional/go.sum
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Dashboard unit tests
+        run: node --test operator/dashboard/*.test.js
+
       - name: gofmt
         run: |
           unformatted=$(gofmt -l go-agent operator tests)
